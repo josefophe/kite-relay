@@ -1,0 +1,162 @@
+# SETUP REQUIREMENTS:
+#
+# 1. Create data directory for user profiles:
+#    mkdir -p ./data && chmod 755 ./data
+#
+# 2. Get kpass binary (see KPASS_SETUP.md for details):
+#    Option A: Mount from host (uncomment volume below)
+#    Option B: Copy to .kpass_bin/ before building Docker
+#    Option C: Build kpass inside Docker (modify Dockerfile)
+#
+# 3. Set environment variables:
+#    export TELEGRAM_BOT_TOKEN="your-token"
+#    export APP_SECRET="your-secret"
+#    export LLM_API_KEY="your-api-key"
+#
+
+services:
+  # RELAY: Telegram polling, HTTP observability, scheduler coordination
+  kite-relay:
+    build: .
+    container_name: kite-relay
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # Service role - MUST be unset or "false" for relay
+      - IS_WORKER=false
+      
+      # Telegram configuration (REQUIRED for relay)
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - APP_SECRET=${APP_SECRET}
+      
+      # Runtime paths (SHARED with worker)
+      - USER_DATA_ROOT=/data
+      - KPASS_BINARY=/usr/local/bin/kpass
+      - KSEARCH_BINARY=/usr/local/bin/ksearch
+      
+      # Network
+      - PORT=3000
+      - HOST=0.0.0.0
+      - REDIS_URL=redis://redis:6379
+      
+      # Database (SHARED with worker - CRITICAL)
+      - DATABASE_URL=sqlite:///data/agents.db
+      - DB_TYPE=sqlite
+      
+      # Scheduler (relay only)
+      - AGENT_SCHEDULER_ENABLED=${AGENT_SCHEDULER_ENABLED:-true}
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-4}
+      - AGENT_MAX_RETRIES=${AGENT_MAX_RETRIES:-3}
+      
+      # LLM/AI (optional)
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL}
+      - LLM_PROVIDER=${LLM_PROVIDER}
+      
+      # Node
+      - NODE_ENV=production
+    volumes:
+      # CRITICAL: Mount entire app directory for source code
+      - ./:/usr/src/app
+      # CRITICAL: Prevent node_modules from being overwritten
+      - /usr/src/app/node_modules
+      - /usr/src/app/dist
+      # CRITICAL: Shared data directory (relay + worker read/write)
+      - ./data:/data
+      # OPTIONAL: If you have kpass installed locally:
+      # - /usr/local/bin/kpass:/usr/local/bin/kpass:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - kite-relay-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # WORKER: Job execution from queue (no polling, no Telegram)
+  # WORKER: Job execution from queue (no polling, no Telegram)
+  kite-worker:
+    build: .
+    container_name: kite-relay-worker
+    restart: unless-stopped
+    # CRITICAL: Run app.js in worker mode (IS_WORKER=true) to trigger proper bootstrapWorker() initialization
+    command: npm start
+    environment:
+      - IS_WORKER=true
+      - APP_SECRET=${APP_SECRET}
+      
+      # 1. CRITICAL: The worker needs the Encryption Key to use the kpass wallet
+      - ENCRYPTION_KEY=${APP_SECRET} 
+      
+      # 2. REQUIRED: A dummy token is often validated even if polling is false
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-dummy_token_for_worker_init}
+      
+      # 3. Network binding paths for internal services
+      - PORT=3001
+      - HOST=0.0.0.0
+      
+      # 4. Correct Binary Paths verified from the install script
+      - KPASS_BINARY=/root/.local/bin/kpass
+      - KSEARCH_BINARY=/root/.local/bin/ksearch
+      
+      - USER_DATA_ROOT=/data
+      
+      # Match the exact explicit code variables
+      - REDIS_URL=redis://redis:6379
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      
+      
+      - DATABASE_URL=sqlite:///data/agents.db
+      - DB_TYPE=sqlite
+      - WORKER_CONCURRENCY=4
+      - WORKER_TIMEOUT=30000
+      - AGENT_MAX_RETRIES=3
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_PROVIDER=openai
+      - LLM_MODEL=gpt-4-turbo
+      - NODE_ENV=production
+
+    volumes:
+      # ONLY mount the persistent data folder, let Docker handle the application code internally
+      - ./data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - kite-relay-net
+
+
+  # Redis: Shared job queue and cache (both relay and worker)
+  redis:
+    image: redis:7-alpine
+    container_name: kite-relay-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    environment:
+      - REDIS_TIMEOUT=0
+    command: redis-server --save 60 1000 --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - kite-relay-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+networks:
+  kite-relay-net:
+    driver: bridge
+
+volumes:
+  redis-data:
+
