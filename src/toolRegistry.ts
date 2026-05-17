@@ -231,14 +231,14 @@ export class ToolRegistry {
     this.register({
       name: "ksearch",
       typeName: "ksearch",
-      description: "Search for information (APIs, services, pricing, documentation, etc.)",
+      description: "Discover AI services using ksearch service catalog discovery",
       category: "search",
       parameters: {
         type: "object",
         properties: {
           query: {
             type: "string",
-            description: "Search query (e.g., 'cheapest AI image API', 'Solana RPC providers', 'stablecoin exchanges')",
+            description: "Search query (e.g., 'cheapest AI image API', 'weather APIs', 'price comparison')",
             minLength: 3,
             maxLength: 500
           }
@@ -248,10 +248,161 @@ export class ToolRegistry {
       requiresSession: false,
       requiresAuthentication: false,
       economicAction: false,
-      timeout: 15000,
+      timeout: 30000,
       handler: async (userId: number, args: Record<string, unknown>) => {
         const handleSearch = handlers.handleSearch as Function;
         return handleSearch(userId, args.query as string);
+      }
+    });
+
+    this.register({
+      name: "ksearchServices",
+      typeName: "ksearchServices",
+      description: "List AI services based on a search query",
+      category: "search",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Search term for service discovery",
+            minLength: 3,
+            maxLength: 500
+          }
+        },
+        required: []
+      },
+      requiresSession: false,
+      requiresAuthentication: false,
+      economicAction: false,
+      timeout: 30000,
+      handler: async (userId: number, args: Record<string, unknown>) => {
+        const handleKsearchServicesList = handlers.handleKsearchServicesList as Function;
+        return handleKsearchServicesList(userId, args.query as string | undefined);
+      }
+    });
+
+    this.register({
+      name: "ksearchServiceDetails",
+      typeName: "ksearchServiceDetails",
+      description: "Fetch detailed metadata for a discovered service",
+      category: "search",
+      parameters: {
+        type: "object",
+        properties: {
+          serviceId: {
+            type: "string",
+            description: "Service ID to inspect"
+          }
+        },
+        required: ["serviceId"]
+      },
+      requiresSession: false,
+      requiresAuthentication: false,
+      economicAction: false,
+      timeout: 30000,
+      handler: async (userId: number, args: Record<string, unknown>) => {
+        const handleKsearchServiceGet = handlers.handleKsearchServiceGet as Function;
+        return handleKsearchServiceGet(userId, args.serviceId as string);
+      }
+    });
+
+    this.register({
+      name: "ksearchCompareServices",
+      typeName: "ksearchCompareServices",
+      description: "Compare pricing, payment model, and capabilities for multiple services",
+      category: "search",
+      parameters: {
+        type: "object",
+        properties: {
+          serviceIds: {
+            type: "string",
+            description: "Comma-separated service IDs to compare"
+          }
+        },
+        required: ["serviceIds"]
+      },
+      requiresSession: false,
+      requiresAuthentication: false,
+      economicAction: false,
+      timeout: 30000,
+      handler: async (userId: number, args: Record<string, unknown>) => {
+        const handleKsearchServiceGet = handlers.handleKsearchServiceGet as Function;
+        const raw = String(args.serviceIds || "").trim();
+        const ids = raw.split(/\s*,\s*/).filter(Boolean);
+
+        if (ids.length === 0) {
+          return { success: false, output: "Provide one or more service IDs separated by commas." } as CommandResult;
+        }
+
+        let output = "";
+        for (const id of ids) {
+          const result = await handleKsearchServiceGet(userId, id);
+          if (!result.success) {
+            return result;
+          }
+          output += `\n${result.output}\n`;
+        }
+
+        return { success: true, output: `🔎 Service comparison results:\n${output.trim()}` } as CommandResult;
+      }
+    });
+
+    this.register({
+      name: "ksearchServicePricing",
+      typeName: "ksearchServicePricing",
+      description: "Inspect service pricing details for a specific service",
+      category: "search",
+      parameters: {
+        type: "object",
+        properties: {
+          serviceId: {
+            type: "string",
+            description: "Service ID to inspect pricing"
+          }
+        },
+        required: ["serviceId"]
+      },
+      requiresSession: false,
+      requiresAuthentication: false,
+      economicAction: false,
+      timeout: 30000,
+      handler: async (userId: number, args: Record<string, unknown>) => {
+        const handleKsearchServiceGet = handlers.handleKsearchServiceGet as Function;
+        const result = await handleKsearchServiceGet(userId, args.serviceId as string);
+        if (!result.success) {
+          return result;
+        }
+        return { success: true, output: result.output } as CommandResult;
+      }
+    });
+
+    this.register({
+      name: "ksearchServiceCategories",
+      typeName: "ksearchServiceCategories",
+      description: "Inspect service categories and tags for a specific service",
+      category: "search",
+      parameters: {
+        type: "object",
+        properties: {
+          serviceId: {
+            type: "string",
+            description: "Service ID to inspect categories"
+          }
+        },
+        required: ["serviceId"]
+      },
+      requiresSession: false,
+      requiresAuthentication: false,
+      economicAction: false,
+      timeout: 30000,
+      handler: async (userId: number, args: Record<string, unknown>) => {
+        const handleKsearchServiceGet = handlers.handleKsearchServiceGet as Function;
+        const result = await handleKsearchServiceGet(userId, args.serviceId as string);
+        if (!result.success) {
+          return result;
+        }
+        return { success: true, output: result.output } as CommandResult;
       }
     });
 
@@ -442,11 +593,44 @@ export class ToolRegistry {
     this.tools.set(tool.name, tool);
   }
 
+  private assertToolIntegrity(tool: Tool, context: string): void {
+    if (!tool || typeof tool !== "object") {
+      throw new Error(`TOOL_REGISTRY_CORRUPTED: ${context} returned invalid tool object`);
+    }
+
+    if (!tool.name || typeof tool.name !== "string") {
+      throw new Error(`TOOL_REGISTRY_CORRUPTED: ${context} returned tool with invalid name -> ${JSON.stringify(tool)}`);
+    }
+
+    if (!tool.typeName || typeof tool.typeName !== "string") {
+      throw new Error(`TOOL_REGISTRY_CORRUPTED: Tool '${tool.name}' has undefined or invalid typeName`);
+    }
+  }
+
+  private assertToolsHealthy(tools: Tool[], context: string): void {
+    if (!Array.isArray(tools)) {
+      throw new Error(`TOOL_REGISTRY_CORRUPTED: ${context} did not return an array of tools`);
+    }
+
+    for (const tool of tools) {
+      this.assertToolIntegrity(tool, context);
+    }
+  }
+
   /**
    * Get a specific tool by name
    */
   get(name: string): Tool | undefined {
-    return this.tools.get(name);
+    if (!name || typeof name !== "string") {
+      throw new Error("TOOL_REGISTRY_INVALID_ARGUMENT: Tool name must be a non-empty string");
+    }
+
+    const tool = this.tools.get(name);
+    if (tool) {
+      this.assertToolIntegrity(tool, `get('${name}')`);
+    }
+
+    return tool;
   }
 
   /**
@@ -455,24 +639,28 @@ export class ToolRegistry {
    */
   getAll(): Tool[] {
     const allTools = Array.from(this.tools.values());
-    
-    // CRITICAL GUARD: Check for corrupted tools
-    for (const tool of allTools) {
-      if (!tool.typeName) {
-        throw new Error(
-          `TOOL_REGISTRY_CORRUPTED: Tool '${tool.name}' has undefined typeName!`
-        );
-      }
-    }
-    
+    this.assertToolsHealthy(allTools, "getAll()");
     return allTools;
+  }
+
+  /**
+   * Backward-compatible alias for older consumer code
+   */
+  getAllTools(): Tool[] {
+    return this.getAll();
   }
 
   /**
    * Get tools filtered by category
    */
   getByCategory(category: string): Tool[] {
-    return Array.from(this.tools.values()).filter(t => t.category === category);
+    if (!category || typeof category !== "string") {
+      throw new Error("TOOL_REGISTRY_INVALID_ARGUMENT: Category must be a non-empty string");
+    }
+
+    const tools = Array.from(this.tools.values()).filter(t => t.category === category);
+    this.assertToolsHealthy(tools, `getByCategory('${category}')`);
+    return tools;
   }
 
   /**
@@ -481,8 +669,10 @@ export class ToolRegistry {
    */
   toVercelFormat(): Record<string, any> {
     const result: Record<string, any> = {};
-    
-    for (const tool of this.tools.values()) {
+    const allTools = Array.from(this.tools.values());
+    this.assertToolsHealthy(allTools, "toVercelFormat()");
+
+    for (const tool of allTools) {
       result[tool.name] = {
         description: tool.description,
         parameters: {

@@ -7,7 +7,20 @@ import {
   handleLogout,
   handleBalance,
   handleSearch,
+  handleKsearchHealth,
+  handleKsearchServicesList,
+  handleKsearchServiceGet,
+  handleKsearchCatalogExport,
   handleTelemetryStatus,
+  handleStatus,
+  handleVersion,
+  handleMe,
+  handleSignupInit,
+  handleSignupPoll,
+  handleSignupExchange,
+  handleFaucetDrop,
+  handleSessionStatusCheck,
+  handleUserSessions,
   handleAgentRegister,
   handleSessionCreate,
   handleSessionList,
@@ -80,14 +93,16 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
       // ==============================================================
       // INTERCEPTOR: CONVERSATIONAL AUTHENTICATION CODE STATE CHECK
       // ==============================================================
+      // Stop processing immediately if the incoming message contains no text
+      if (!incomingText) return; 
+
       if (!incomingText.startsWith("/")) {
         try {
           const profile = readUserProfile(userId, config.userDataRoot);
-
           if (profile.pendingAuth) {
             const authAge = Date.now() - profile.pendingAuth.createdAt;
-            const MAX_AUTH_TTL = 10 * 60 * 1000; // 10 minutes
-
+            const MAX_AUTH_TTL = 10 * 60 * 1000; 
+            
             if (authAge > MAX_AUTH_TTL) {
               delete profile.pendingAuth;
               writeUserProfile(userId, config.userDataRoot, profile);
@@ -96,30 +111,36 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
                 "⏰ Your verification code has expired. Please run /login again to start a new authentication."
               );
             }
-
+            
+            // Strings like '3UQ5QZUX' or '622KPDSZ' will now evaluate flawlessly here
             const isOtpLike = /^[A-Z0-9]{4,12}$/.test(incomingText.toUpperCase());
-
             if (isOtpLike) {
+              if (!profile.pendingAuth.loginId) {
+                await bot.sendMessage(
+                  msg.chat.id,
+                  "❌ Unable to complete verification because login metadata is missing. Please run /login again."
+                );
+                return;
+              }
+
               await bot.sendMessage(
                 msg.chat.id,
                 "⏳ Verification code received, authenticating your sandbox environment..."
               );
-
               const telegramUsername = msg.from?.username || undefined;
               const result = await handleVerify(userId, profile.pendingAuth.loginId, incomingText, telegramUsername);
-
               const updatedProfile = readUserProfile(userId, config.userDataRoot);
               delete updatedProfile.pendingAuth;
               writeUserProfile(userId, config.userDataRoot, updatedProfile);
-
               await bot.sendMessage(msg.chat.id, result.output);
-              return; // Halt command routing execution tree
+              return; 
             }
           }
         } catch (profileError) {
           // No profile folder available yet, safe to pass through
         }
       }
+
 
       // ==============================================================
       // STANDARD ROUTING ENGINE LISTENER MATRIX
@@ -155,6 +176,12 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
             `• \`/balance\` — Check wallet balance\n` +
             `• \`/send @username AMOUNT ASSET\` — Send to user\n` +
             `• \`/wallet-send ADDRESS AMOUNT ASSET\` — Send to address\n\n` +
+
+            `🔍 *Service Discovery*\n` +
+            `• \`/ksearch-health\` — Check ksearch runtime health\n` +
+            `• \`/services [query]\` — Discover AI services\n` +
+            `• \`/service <service-id>\` — Inspect one service\n` +
+            `• \`/catalog-export\` — Export service catalog to Markdown\n\n` +
 
             `🛒 *Commerce (Phase 4)*\n` +
             `• \`/buy-airtime PHONE AMOUNT provider\` — Buy airtime (NGN)\n` +
@@ -256,6 +283,36 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
           );
         }
       }
+      // ========== STATUS ==========
+      else if (msg.text === "/status") {
+        try {
+          const result = await handleStatus(userId);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+        } catch (error) {
+          logger.error({ userId, error }, "status failed");
+          await bot.sendMessage(msg.chat.id, `❌ Status check failed: ${error instanceof Error ? error.message : "unexpected error"}`);
+        }
+      }
+      // ========== VERSION ==========
+      else if (msg.text === "/version") {
+        try {
+          const result = await handleVersion(userId);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+        } catch (error) {
+          logger.error({ userId, error }, "version failed");
+          await bot.sendMessage(msg.chat.id, `❌ Version check failed: ${error instanceof Error ? error.message : "unexpected error"}`);
+        }
+      }
+      // ========== ME ==========
+      else if (msg.text === "/me") {
+        try {
+          const result = await handleMe(userId);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+        } catch (error) {
+          logger.error({ userId, error }, "me failed");
+          await bot.sendMessage(msg.chat.id, `❌ Identity check failed: ${error instanceof Error ? error.message : "unexpected error"}`);
+        }
+      }
       // ========== BALANCE ==========
       else if (msg.text === "/balance") {
         try {
@@ -295,7 +352,7 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
         try {
           const result = await handleSearch(userId, query);
           if (result.success) {
-            await bot.sendMessage(msg.chat.id, `🔍 Search Results:\n${result.output}`);
+            await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
           } else {
             await bot.sendMessage(msg.chat.id, `❌ ${result.output}`);
           }
@@ -305,6 +362,73 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
             msg.chat.id,
             `❌ Search failed: ${error instanceof Error ? error.message : "unexpected error"}`
           );
+        }
+      }
+      // ========== KSEARCH HEALTH ==========
+      else if (incomingText === "/ksearch-health") {
+        try {
+          const result = await handleKsearchHealth(userId);
+          if (result.success) {
+            await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+          } else {
+            await bot.sendMessage(msg.chat.id, `❌ ${result.output}`);
+          }
+        } catch (error) {
+          logger.error({ userId, error }, "ksearch health failed");
+          await bot.sendMessage(msg.chat.id, `❌ KSearch health check failed: ${error instanceof Error ? error.message : "unexpected error"}`);
+        }
+      }
+      // ========== SERVICE LIST ==========
+      else if (incomingText.startsWith("/services")) {
+        const query = incomingText.split(" ").slice(1).join(" ").trim();
+
+        try {
+          const result = await handleKsearchServicesList(userId, query);
+          if (result.success) {
+            await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+          } else {
+            await bot.sendMessage(msg.chat.id, `❌ ${result.output}`);
+          }
+        } catch (error) {
+          logger.error({ userId, query, error }, "services command failed");
+          await bot.sendMessage(msg.chat.id, `❌ Services query failed: ${error instanceof Error ? error.message : "unexpected error"}`);
+        }
+      }
+      // ========== SERVICE DETAIL ==========
+      else if (incomingText.startsWith("/service")) {
+        const serviceId = incomingText.split(" ").slice(1).join(" ").trim();
+        if (!serviceId) {
+          return await bot.sendMessage(msg.chat.id, "Usage: /service <service-id>");
+        }
+
+        try {
+          const result = await handleKsearchServiceGet(userId, serviceId);
+          if (result.success) {
+            await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+          } else {
+            await bot.sendMessage(msg.chat.id, `❌ ${result.output}`);
+          }
+        } catch (error) {
+          logger.error({ userId, serviceId, error }, "service detail failed");
+          await bot.sendMessage(msg.chat.id, `❌ Service lookup failed: ${error instanceof Error ? error.message : "unexpected error"}`);
+        }
+      }
+      // ========== CATALOG EXPORT ==========
+      else if (incomingText === "/catalog-export") {
+        try {
+          const result = await handleKsearchCatalogExport(userId);
+          if (result.success && result.filePath) {
+            await bot.sendDocument(msg.chat.id, result.filePath, {
+              caption: result.output,
+            });
+          } else if (result.success) {
+            await bot.sendMessage(msg.chat.id, result.output);
+          } else {
+            await bot.sendMessage(msg.chat.id, `❌ ${result.output}`);
+          }
+        } catch (error) {
+          logger.error({ userId, error }, "catalog export failed");
+          await bot.sendMessage(msg.chat.id, `❌ Catalog export failed: ${error instanceof Error ? error.message : "unexpected error"}`);
         }
       }
       // ========== STATUS ==========
@@ -844,10 +968,19 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
           const toolHandlers: Record<string, Function> = {
             handleBalance,
             handleSearch,
+            handleKsearchServicesList,
+            handleKsearchServiceGet,
+            handleKsearchCatalogExport,
+            handleStatus,
+            handleVersion,
+            handleMe,
+            handleFaucetDrop,
+            handleUserSessions,
             handleWalletSend,
             handleSendToUsername,
             handleSessionCreate,
             handleSessionList,
+            handleSessionStatusCheck,
             handleSessionExecute,
             handleAgentList,
             handleBuyAirtime,

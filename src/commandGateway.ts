@@ -3,6 +3,7 @@ import { executeKpass, executeKsearch } from "./userRuntime";
 import { isCommandAllowed, sanitizeSearchQuery } from "./policy";
 import { appendUserHistory, readUserProfile, writeUserProfile, getUserPaths, PendingAuth } from "./storage";
 import { logger } from "./logger";
+import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
 import { getAgentStorage } from "./agentStorage";
@@ -11,6 +12,7 @@ import { getScheduler } from "./scheduler";
 export interface CommandResult {
   success: boolean;
   output: string;
+  filePath?: string;
 }
 
 /**
@@ -200,7 +202,7 @@ export async function handleBalance(userId: number): Promise<CommandResult> {
 }
 
 /**
- * Search for information
+ * Search for services using ksearch catalog discovery
  */
 export async function handleSearch(userId: number, query: string): Promise<CommandResult> {
   if (!isCommandAllowed("search")) {
@@ -210,20 +212,376 @@ export async function handleSearch(userId: number, query: string): Promise<Comma
   const sanitized = sanitizeSearchQuery(query);
   const startTime = Date.now();
   try {
-    const authStatus = assertAuthentication(userId);
-    if (!authStatus.exists) {
-      return { success: false, output: "❌ Session unauthenticated. Please run /login first." };
+    const args = [
+      "services",
+      "list",
+      "--payment-approach",
+      "x402_http",
+      "--asset",
+      "USDC",
+      "--limit",
+      "10",
+      "--output",
+      "json",
+    ];
+
+    if (sanitized && sanitized.trim()) {
+      args.push("--query", sanitized);
     }
 
-    const output = await executeKsearch(userId, sanitized, "search");
+    const output = await executeKsearch(userId, args, "search");
     appendUserHistory(userId, config.userDataRoot, "search", sanitized);
 
-    logger.info({ userId, querySize: sanitized.length, durationMs: Date.now() - startTime }, "telemetry: knowledge network search completed");
-    return { success: true, output };
+    logger.info({ userId, querySize: sanitized.length, durationMs: Date.now() - startTime }, "telemetry: ksearch service discovery completed");
+
+    // Note: ksearch services list already filtered by --query flag above
+    const services = normalizeServiceListResponse(output);
+    if (services.length === 0) {
+      return { success: true, output: `🔎 No services found for: "${sanitized}"` };
+    }
+
+    const message = `🔎 Search Results for: *${sanitized}*\n` +
+      "━━━━━━━━━━━━━━━━━━━━━━\n" +
+      services
+        .slice(0, 10)
+        .map((service: any, index: number) => {
+          const name = String(service.name || service.title || service.service_id || service.id || "Unknown");
+          const serviceId = String(service.service_id || service.id || "unknown");
+          const categories = Array.isArray(service.categories)
+            ? service.categories.join(", ")
+            : String(service.tags || "-");
+          const url = String(service.url || service.endpoint || service.base_url || "");
+
+          return `*${index + 1}. ${name}*\n` +
+            `ID: \`${serviceId}\`\n` +
+            `Tags: ${categories}\n` +
+            (url ? `URL: ${url}\n` : "");
+        })
+        .join("\n\n");
+
+    return { success: true, output: message };
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    logger.error({ userId, query: sanitized, durationMs: Date.now() - startTime, error: errorMsg }, "telemetry: search daemon invocation crashed");
+    logger.error({ userId, query: sanitized, durationMs: Date.now() - startTime, error: errorMsg }, "telemetry: ksearch service discovery failed");
     return { success: false, output: `Search failed: ${errorMsg}` };
+  }
+}
+
+function normalizeServiceListResponse(output: string): any[] {
+  try {
+    const response = JSON.parse(output);
+    if (Array.isArray(response)) {
+      return response;
+    }
+    if (Array.isArray(response.services)) {
+      return response.services;
+    }
+    if (Array.isArray(response.data)) {
+      return response.data;
+    }
+    if (Array.isArray(response.items)) {
+      return response.items;
+    }
+    if (response.service) {
+      return [response.service];
+    }
+    return [];
+  } catch {
+    return parseKsearchServicesListTable(output);
+  }
+}
+
+function filterServicesByQuery(services: any[], query: string): any[] {
+  if (!query || !query.trim()) {
+    return services;
+  }
+
+  const lowerQuery = query.toLowerCase();
+  const terms = lowerQuery.split(/\s+/).filter(Boolean);
+  if (terms.length === 0) {
+    return services;
+  }
+
+  return services.filter((service: any) => {
+    const haystack = [
+      service.name,
+      service.title,
+      service.summary,
+      service.description,
+      service.service_id,
+      service.id,
+      service.url,
+      service.endpoint,
+      service.base_url,
+      service.categories,
+      service.tags,
+      service.payment_approach,
+      service.featured_endpoints && Array.isArray(service.featured_endpoints)
+        ? service.featured_endpoints.map((endpoint: any) => `${endpoint.method} ${endpoint.path} ${endpoint.summary || ""}`).join(" ")
+        : undefined,
+    ]
+      .filter(Boolean)
+      .map(String)
+      .join(" ")
+      .toLowerCase();
+
+    return terms.every((term) => haystack.includes(term));
+  });
+}
+
+function parseKsearchServicesListTable(output: string): any[] {
+  const lines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length < 3) {
+    return [];
+  }
+
+  const headerIndex = lines.findIndex((line) => /^ID\s+Name\s+Category\s+Service URL$/i.test(line));
+  if (headerIndex === -1 || headerIndex + 1 >= lines.length) {
+    return [];
+  }
+
+  return lines.slice(headerIndex + 2).reduce((result: any[], line) => {
+    const columns = line.split(/\s{2,}/).map((col) => col.trim()).filter(Boolean);
+    if (columns.length < 3) {
+      return result;
+    }
+    result.push({
+      service_id: columns[0] || "",
+      name: columns[1] || "",
+      categories: columns[2] ? columns[2].split(/,\s*/).map((item) => item.trim()).filter(Boolean) : [],
+      url: columns[3] || "",
+    });
+    return result;
+  }, [] as any[]);
+}
+
+function normalizeServiceDetailResponse(output: string): any {
+  try {
+    const response = JSON.parse(output);
+    return response.service || response;
+  } catch {
+    return null;
+  }
+}
+
+function formatServiceSummary(service: any): string {
+  const name = String(service.name || service.title || "Unknown");
+  const serviceId = String(service.service_id || service.id || "unknown");
+  const categories = Array.isArray(service.categories) ? service.categories.join(", ") : String(service.tags || "-");
+  const pricing = service.pricing?.price || service.price || service.min_price || "dynamic";
+  const payment = service.pricing?.payment_model || service.payment_model || service.payment_approach || "unknown";
+  const assets = Array.isArray(service.supported_assets)
+    ? service.supported_assets.join(", ")
+    : Array.isArray(service.assets)
+    ? service.assets.join(", ")
+    : String(service.asset || "USDC");
+  const endpoints = Array.isArray(service.endpoints)
+    ? service.endpoints.join(" ")
+    : String(service.endpoint || "");
+  const url = String(service.url || service.endpoint || "");
+
+  let message = `*${name}*\n`;
+  message += `ID: \`${serviceId}\`\n`; // Simplified raw template backticks
+  message += categories ? `Tags: ${categories}\n` : "";
+  message += `Pricing: ${pricing}\n`;
+  message += `Payment: ${payment}\n`;
+  message += `Assets: ${assets}\n`;
+  if (endpoints) {
+    message += `Endpoints: ${endpoints}\n`;
+  }
+
+  if (url) {
+    message += `URL: ${url}\n`;
+  }
+  if (service.description) {
+    message += `\n${String(service.description).replace(/\n/g, " ")}\n`;
+  }
+  return message.trim();
+}
+
+async function getServiceMetadata(userId: number, serviceId: string): Promise<{ success: boolean; output: string; service?: any }> {
+  const args = [
+    "services",
+    "get",
+    "--service-id",
+    serviceId,
+    "--output",
+    "json",
+  ];
+
+  try {
+    const output = await executeKsearch(userId, args, "service-get");
+    const service = normalizeServiceDetailResponse(output);
+    if (!service) {
+      return { success: false, output: `Could not parse service details for: ${serviceId}` };
+    }
+    return { success: true, output, service };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    return { success: false, output: `Service fetch failed: ${errorMsg}` };
+  }
+}
+
+async function runArchive(sourceDir: string, archivePath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("tar", ["-czf", archivePath, "-C", sourceDir, "."], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(stderr.trim() || `tar exited with code ${code}`));
+      }
+    });
+
+    child.on("error", (err) => reject(err));
+  });
+}
+
+export async function handleKsearchHealth(userId: number): Promise<CommandResult> {
+  if (!isCommandAllowed("ksearch-health")) {
+    return { success: false, output: "KSearch health check is not allowed." };
+  }
+
+  const startTime = Date.now();
+  try {
+    const output = await executeKsearch(userId, ["health", "--output", "json"], "ksearch-health");
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(output);
+    } catch {
+      // Fallback to plain text output
+    }
+
+    const summary = parsed ? JSON.stringify(parsed, null, 2) : output.trim();
+    return {
+      success: true,
+      output: `🩺 KSearch Health:\n━━━━━━━━━━━━━━━━\n${summary}`,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: errorMsg, durationMs: Date.now() - startTime }, "telemetry: ksearch health failed");
+    return { success: false, output: `KSearch health check failed: ${errorMsg}` };
+  }
+}
+
+export async function handleKsearchServicesList(userId: number, query?: string): Promise<CommandResult> {
+  if (!isCommandAllowed("services")) {
+    return { success: false, output: "Service discovery is not allowed." };
+  }
+
+  const startTime = Date.now();
+  try {
+    const args = [
+      "services",
+      "list",
+      "--payment-approach",
+      "x402_http",
+      "--asset",
+      "USDC",
+      "--limit",
+      "20",
+      "--output",
+      "json",
+    ];
+
+    if (query && query.trim()) {
+      args.push("--query", sanitizeSearchQuery(query));
+    }
+
+    const output = await executeKsearch(userId, args, "services-list");
+    // Note: ksearch services list with --query and other filters already applied above
+    const services = normalizeServiceListResponse(output);
+
+    if (services.length === 0) {
+      return { success: true, output: `🌐 No services found${query ? ` for '${query}'` : ""}.` };
+    }
+
+    const lines = services.slice(0, 15).map((service: any) => {
+      const name = String(service.name || service.title || "Unknown");
+      const serviceId = String(service.service_id || service.id || "unknown");
+      const categories = Array.isArray(service.categories)
+        ? service.categories.join(", ")
+        : String(service.tags || "-");
+      const pricing = service.pricing?.price || service.price || service.min_price || "dynamic";
+      const shortUrl = String(service.url || service.endpoint || service.base_url || "");
+      const urlLabel = shortUrl ? `🔗 ${shortUrl}` : "";
+
+      return `*${name}*\n🧠 Tags: ${categories}\n💵 From: ${pricing}\n🆔 ${serviceId.substring(0, 12)}...\n${urlLabel}`.trim();
+    });
+
+    return {
+      success: true,
+      output: `🌐 AVAILABLE SERVICES\n━━━━━━━━━━━━━━━━━━━━\n${lines.join("\n\n")}`,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, query, error: errorMsg, durationMs: Date.now() - startTime }, "telemetry: services list failed");
+    return { success: false, output: `Service discovery failed: ${errorMsg}` };
+  }
+}
+
+export async function handleKsearchServiceGet(userId: number, serviceId: string): Promise<CommandResult> {
+  if (!isCommandAllowed("service")) {
+    return { success: false, output: "Service inspection is not allowed." };
+  }
+
+  if (!serviceId || serviceId.trim().length === 0) {
+    return { success: false, output: "Usage: /service <service-id>" };
+  }
+
+  const startTime = Date.now();
+  try {
+    const normalizedId = serviceId.trim();
+    const { success, output, service } = await getServiceMetadata(userId, normalizedId);
+    if (!success) {
+      return { success: false, output };
+    }
+
+    const summary = formatServiceSummary(service);
+    return { success: true, output: `🔥 SERVICE DETAILS\n━━━━━━━━━━━━━━━━\n${summary}` };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, serviceId, error: errorMsg, durationMs: Date.now() - startTime }, "telemetry: service get failed");
+    return { success: false, output: `Service query failed: ${errorMsg}` };
+  }
+}
+
+export async function handleKsearchCatalogExport(userId: number): Promise<CommandResult> {
+  if (!isCommandAllowed("catalog-export")) {
+    return { success: false, output: "Catalog export is not allowed." };
+  }
+
+  const startTime = Date.now();
+  try {
+    const paths = getUserPaths(userId, config.userDataRoot);
+    const exportDir = path.join(paths.workspace, ".kite", "catalog");
+    fs.mkdirSync(exportDir, { recursive: true });
+
+    await executeKsearch(userId, ["export", "markdown", "--output-dir", ".kite/catalog", "--split", "service-pages"], "catalog-export");
+    const archivePath = path.join(paths.workspace, ".kite", `catalog-${Date.now()}.tar.gz`);
+
+    await runArchive(exportDir, archivePath);
+
+    return {
+      success: true,
+      output: `📦 Catalog export complete. Download the archive below.`,
+      filePath: archivePath,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: errorMsg, durationMs: Date.now() - startTime }, "telemetry: catalog export failed");
+    return { success: false, output: `Catalog export failed: ${errorMsg}` };
   }
 }
 
@@ -383,6 +741,390 @@ export async function handleLogout(userId: number): Promise<CommandResult> {
   };
 }
 
+/**
+ * Check system status and health
+ */
+export async function handleStatus(userId: number): Promise<CommandResult> {
+  const authStatus = assertAuthentication(userId);
+  const startTime = Date.now();
+  try {
+    const output = await executeKpass(userId, ["status", "--output", "json"], "status");
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(output);
+    } catch {
+      // Fallback to plain text
+    }
+
+    const summary = parsed ? JSON.stringify(parsed, null, 2) : output.trim();
+    return {
+      success: true,
+      output: `📊 System Status\n━━━━━━━━━━━━━━━━\n${summary}`,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: errorMsg, durationMs: Date.now() - startTime }, "telemetry: status check failed");
+    return { success: false, output: `Status check failed: ${errorMsg}` };
+  }
+}
+
+/**
+ * Get version information
+ */
+export async function handleVersion(userId: number): Promise<CommandResult> {
+  const startTime = Date.now();
+  try {
+    const output = await executeKpass(userId, ["--version"], "version");
+    return {
+      success: true,
+      output: `📦 Version Information\n━━━━━━━━━━━━━━━━━━━\n${output.trim()}`,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: errorMsg, durationMs: Date.now() - startTime }, "telemetry: version check failed");
+    return { success: false, output: `Version check failed: ${errorMsg}` };
+  }
+}
+
+/**
+ * Get current user identity
+ */
+export async function handleMe(userId: number): Promise<CommandResult> {
+  const authStatus = assertAuthentication(userId);
+  if (!authStatus.exists) {
+    return { success: false, output: "❌ Not authenticated. Please run /login first." };
+  }
+
+  const startTime = Date.now();
+  try {
+    const output = await executeKpass(userId, ["me", "--output", "json"], "me");
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(output);
+    } catch {
+      // Fallback
+    }
+
+    const email = parsed?.email || "unknown";
+    const passportId = parsed?.sub || parsed?.id || "unknown";
+    
+    return {
+      success: true,
+      output: 
+        `👤 Current Identity\n━━━━━━━━━━━━━━━━\n` +
+        `Email: ${email}\n` +
+        `Passport ID: ${passportId}\n`,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: errorMsg, durationMs: Date.now() - startTime }, "telemetry: identity check failed");
+    return { success: false, output: `Identity check failed: ${errorMsg}` };
+  }
+}
+
+/**
+ * Signup initialization
+ */
+export async function handleSignupInit(userId: number, email: string): Promise<CommandResult> {
+  if (!isCommandAllowed("signup")) {
+    return { success: false, output: "Signup command is not allowed." };
+  }
+
+  const sanitized = email.trim().toLowerCase();
+  if (!sanitized || !sanitized.includes("@")) {
+    return { success: false, output: "Please provide a valid email address.\nUsage: /signup email@domain.com" };
+  }
+
+  const startTime = Date.now();
+  try {
+    const output = await executeKpass(userId, ["signup", "init", "--email", sanitized, "--output", "json"], "signup-init");
+    let signupId = "";
+    try {
+      const response = JSON.parse(output);
+      signupId = response.signupId || response.signup_id || "";
+    } catch {
+      // Fallback
+    }
+
+    const profile = readUserProfile(userId, config.userDataRoot);
+    profile.pendingAuth = {
+      signupId,
+      email: sanitized,
+      createdAt: Date.now(),
+    };
+    writeUserProfile(userId, config.userDataRoot, profile);
+
+    logger.info({ userId, email: sanitized, durationMs: Date.now() - startTime }, "telemetry: signup initiated");
+
+    return {
+      success: true,
+      output: 
+        `📨 Signup Initiated\n` +
+        `━━━━━━━━━━━━━━━━\n` +
+        `Email: ${sanitized}\n` +
+        `Signup ID: ${signupId}\n\n` +
+        `Please verify your email and provide the verification details.`,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, email: sanitized, error: errorMsg, durationMs: Date.now() - startTime }, "telemetry: signup init failed");
+    return { success: false, output: `Signup failed: ${errorMsg}` };
+  }
+}
+
+/**
+ * Signup poll for email verification
+ */
+export async function handleSignupPoll(userId: number, signupId: string): Promise<CommandResult> {
+  if (!isCommandAllowed("signup")) {
+    return { success: false, output: "Signup command is not allowed." };
+  }
+
+  const sanitizedId = signupId.trim();
+  if (!sanitizedId) {
+    return { success: false, output: "Usage: /signup-poll <signup-id>" };
+  }
+
+  const startTime = Date.now();
+  try {
+    const output = await executeKpass(userId, ["signup", "poll", "--signup-id", sanitizedId, "--wait", "--output", "json"], "signup-poll");
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(output);
+    } catch {
+      // Fallback
+    }
+
+    const status = parsed?.status || "pending";
+    logger.info({ userId, signupId: sanitizedId, status, durationMs: Date.now() - startTime }, "telemetry: signup poll completed");
+
+    return {
+      success: status === "verified",
+      output:
+        `✉️ Email Verification Status\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `Status: ${status}\n` +
+        `\nIf verified, proceed with /signup-exchange <signup-id> <exchange-token>`,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, signupId: sanitizedId, error: errorMsg, durationMs: Date.now() - startTime }, "telemetry: signup poll failed");
+    return { success: false, output: `Signup poll failed: ${errorMsg}` };
+  }
+}
+
+/**
+ * Signup exchange with verification token
+ */
+export async function handleSignupExchange(userId: number, signupId: string, exchangeToken: string): Promise<CommandResult> {
+  if (!isCommandAllowed("signup")) {
+    return { success: false, output: "Signup command is not allowed." };
+  }
+
+  const sanitizedId = signupId.trim();
+  const sanitizedToken = exchangeToken.trim();
+
+  if (!sanitizedId || !sanitizedToken) {
+    return { success: false, output: "Usage: /signup-exchange <signup-id> <exchange-token>" };
+  }
+
+  const startTime = Date.now();
+  try {
+    const output = await executeKpass(
+      userId,
+      ["signup", "exchange", "--signup-id", sanitizedId, "--exchange-token", sanitizedToken, "--output", "json"],
+      "signup-exchange"
+    );
+
+    let passportId = `user_${userId}`;
+    let email = "authenticated";
+
+    try {
+      const response = JSON.parse(output);
+      passportId = response.sub || response.passportId || response.user_id || passportId;
+      email = response.email || email;
+    } catch {
+      // Fallback
+    }
+
+    const profile = readUserProfile(userId, config.userDataRoot);
+    profile.identity = { passportId, label: email, walletId: "" };
+    profile.pendingAuth = undefined;
+    writeUserProfile(userId, config.userDataRoot, profile);
+
+    logger.info({ userId, passportId, email, durationMs: Date.now() - startTime }, "telemetry: signup completed");
+
+    return {
+      success: true,
+      output:
+        `✅ Signup Complete!\n` +
+        `━━━━━━━━━━━━━━━━\n` +
+        `Welcome, ${email}!\n` +
+        `Your account is ready to use.`,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, signupId: sanitizedId, error: errorMsg, durationMs: Date.now() - startTime }, "telemetry: signup exchange failed");
+    return { success: false, output: `Signup exchange failed: ${errorMsg}` };
+  }
+}
+
+/**
+ * Faucet drop for testnet
+ */
+export async function handleFaucetDrop(userId: number, recipientAddress: string, token?: string): Promise<CommandResult> {
+  if (!isCommandAllowed("faucet")) {
+    return { success: false, output: "Faucet command is not allowed." };
+  }
+
+  const sanitizedAddress = recipientAddress.trim();
+  if (!sanitizedAddress) {
+    return { success: false, output: "Usage: /faucet-drop <wallet-address> [token]\nExample: /faucet-drop 0x123... USDC" };
+  }
+
+  const startTime = Date.now();
+  try {
+    const args = ["faucet", "drop", "--recipient", sanitizedAddress, "--token", token || "USDC", "--output", "json"];
+    const output = await executeKpass(userId, args, "faucet-drop");
+
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(output);
+    } catch {
+      // Fallback
+    }
+
+    const amount = parsed?.amount || "?";
+    const txHash = parsed?.tx_hash || parsed?.hash || "pending";
+
+    logger.info({ userId, address: sanitizedAddress, amount, durationMs: Date.now() - startTime }, "telemetry: faucet drop completed");
+
+    return {
+      success: true,
+      output:
+        `💧 Faucet Drop\n` +
+        `━━━━━━━━━━━\n` +
+        `Address: ${sanitizedAddress.substring(0, 10)}...\n` +
+        `Amount: ${amount}\n` +
+        `TX Hash: ${txHash.substring(0, 16)}...\n`,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, address: sanitizedAddress, error: errorMsg, durationMs: Date.now() - startTime }, "telemetry: faucet drop failed");
+    return { success: false, output: `Faucet drop failed: ${errorMsg}` };
+  }
+}
+
+/**
+ * Get session approval status
+ */
+export async function handleSessionStatusCheck(userId: number, requestId: string): Promise<CommandResult> {
+  if (!isCommandAllowed("session-status")) {
+    return { success: false, output: "Session status check is not allowed." };
+  }
+
+  const authStatus = assertAuthentication(userId);
+  if (!authStatus.exists) {
+    return { success: false, output: "❌ Not authenticated. Please run /login first." };
+  }
+
+  const sanitizedId = requestId.trim();
+  if (!sanitizedId) {
+    return { success: false, output: "Usage: /session-status-check <request-id>" };
+  }
+
+  const startTime = Date.now();
+  try {
+    const output = await executeKpass(
+      userId,
+      ["agent:session", "status", "--request-id", sanitizedId, "--wait", "--output", "json"],
+      "session-status"
+    );
+
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(output);
+    } catch {
+      // Fallback
+    }
+
+    const status = parsed?.status || "unknown";
+    const approved = status === "approved" || status === "active";
+
+    logger.info({ userId, requestId: sanitizedId, status, durationMs: Date.now() - startTime }, "telemetry: session status checked");
+
+    return {
+      success: approved,
+      output:
+        `⏳ Session Approval Status\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `Request ID: ${sanitizedId.substring(0, 16)}...\n` +
+        `Status: ${status}\n` +
+        `${approved ? "\n✅ Session is approved and ready to use." : "\n⏳ Waiting for approval or check again later."}`,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, requestId: sanitizedId, error: errorMsg, durationMs: Date.now() - startTime }, "telemetry: session status check failed");
+    return { success: false, output: `Session status check failed: ${errorMsg}` };
+  }
+}
+
+/**
+ * List user sessions across all agents
+ */
+export async function handleUserSessions(userId: number, statusFilter?: string): Promise<CommandResult> {
+  const authStatus = assertAuthentication(userId);
+  if (!authStatus.exists) {
+    return { success: false, output: "❌ Not authenticated. Please run /login first." };
+  }
+
+  const startTime = Date.now();
+  try {
+    const args = ["user", "sessions", "--output", "json"];
+    
+    if (statusFilter && statusFilter.trim()) {
+      args.push("--status", statusFilter.toLowerCase());
+    }
+
+    const output = await executeKpass(userId, args, "user-sessions");
+
+    let sessions: any[] = [];
+    try {
+      const parsed = JSON.parse(output);
+      sessions = Array.isArray(parsed) ? parsed : parsed.sessions || [];
+    } catch {
+      // Fallback to plain text
+    }
+
+    if (sessions.length === 0) {
+      return { success: true, output: `📋 No sessions found${statusFilter ? ` with status '${statusFilter}'` : ""}.` };
+    }
+
+    const lines = sessions.map((session: any, idx: number) => {
+      const sessionId = String(session.session_id || session.id || "unknown");
+      const agentId = String(session.agent_id || session.agent || "unknown");
+      const status = String(session.status || "unknown");
+      const ttl = String(session.ttl || session.remaining || "N/A");
+
+      return `*${idx + 1}. Session ${sessionId.substring(0, 8)}...*\n` +
+        `Agent: ${agentId.substring(0, 8)}...\n` +
+        `Status: ${status}\n` +
+        `TTL: ${ttl}\n`;
+    });
+
+    logger.info({ userId, count: sessions.length, durationMs: Date.now() - startTime }, "telemetry: user sessions listed");
+
+    return {
+      success: true,
+      output: `📋 User Sessions\n━━━━━━━━━━━━━━━━\n${lines.join("\n")}`,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: errorMsg, durationMs: Date.now() - startTime }, "telemetry: user sessions list failed");
+    return { success: false, output: `Session listing failed: ${errorMsg}` };
+  }
+}
+
 // ════════════════════════════════════════════════════════════════
 // PHASE 1: AGENT SESSIONS - Real kpass agent infrastructure
 // ════════════════════════════════════════════════════════════════
@@ -508,13 +1250,21 @@ export async function handleSessionCreate(
       };
     }
 
+    const maxTotal = (parseFloat(maxAmountPerTx) * 5).toString();
+    
     const args = [
       "agent:session",
       "create",
       "--max-amount-per-tx",
       maxAmountPerTx,
+      "--max-total-amount",
+      maxTotal,
       "--ttl",
       ttl,
+      "--assets",
+      "USDC",
+      "--payment-approach",
+      "x402_http",
       "--output",
       "json",
     ];
@@ -765,7 +1515,8 @@ export async function handleSessionExecute(
   userId: number,
   url: string,
   method?: string,
-  headersJson?: string
+  headersJson?: string,
+  bodyJson?: string
 ): Promise<CommandResult> {
   if (!isCommandAllowed("session-execute")) {
     return { success: false, output: "Session execution is not allowed." };
@@ -779,7 +1530,7 @@ export async function handleSessionExecute(
   if (!url || url.trim() === "") {
     return {
       success: false,
-      output: "Usage: /session-execute <url> [GET|POST] [headers-json]",
+      output: "Usage: /session-execute <url> [GET|POST] [headers-json] [body-json]",
     };
   }
 
@@ -787,12 +1538,17 @@ export async function handleSessionExecute(
   try {
     const args = ["agent:session", "execute", "--url", url, "--output", "json"];
 
-    if (method && method.trim() && method !== "GET") {
-      args.push("--method", method.toUpperCase());
+    const method_upper = (method && method.trim()) ? method.toUpperCase() : "GET";
+    if (method_upper !== "GET") {
+      args.push("--method", method_upper);
     }
 
     if (headersJson && headersJson.trim()) {
       args.push("--headers", headersJson);
+    }
+
+    if (bodyJson && bodyJson.trim()) {
+      args.push("--body", bodyJson);
     }
 
     const output = await executeKpass(userId, args, "session-execute");

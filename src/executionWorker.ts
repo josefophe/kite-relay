@@ -221,7 +221,7 @@ export class ExecutionWorker {
       } else if (command === "ksearch") {
         // Example: ksearch "AI grants"
         const query = commandArgs?.query || "query";
-        output = await executeKsearch(userId, query, "agent-ksearch");
+        output = await executeKsearch(userId, [query], "agent-ksearch");
       } else if (command === "commerce") {
         // commerce agent commands: delegate to commerceService flows
         const type = (commandArgs && (commandArgs as any).type) || "airtime";

@@ -201,22 +201,23 @@ export async function executeKpass(userId: number, args: string[], command: stri
 /**
  * Execute ksearch in user's isolated environment
  */
-export async function executeKsearch(userId: number, query: string, p0: string): Promise<string> {
+export async function executeKsearch(userId: number, args: string[], command: string): Promise<string> {
   return enqueue(userId, async () => {
     const paths = ensureUserPaths(userId, config.userDataRoot);
     
     const profile = readUserProfile(userId, config.userDataRoot);
     profile.lastSeenAt = new Date().toISOString();
-    profile.history.commands.push(`${new Date().toISOString()} ksearch`);
-    profile.history.searches.push(query);
+    profile.history.commands.push(`${new Date().toISOString()} ksearch ${args.join(" ")}`);
+    if (args.length > 0) {
+      profile.history.searches.push(args.join(" "));
+    }
     writeUserProfile(userId, config.userDataRoot, profile);
 
-    // FIX: Pass query string straight to the runtime wrapper array without the --query flag
     return runSubprocess({
       bin: config.ksearchBinary,
-      args: [query],
+      args,
       userId,
-      command: "search",
+      command,
     });
   });
 }

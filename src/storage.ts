@@ -3,7 +3,8 @@ import path from "path";
 import { logger } from "./logger";
 
 export interface PendingAuth {
-  loginId: string;
+  loginId?: string;
+  signupId?: string;
   email: string;
   createdAt: number;
 }

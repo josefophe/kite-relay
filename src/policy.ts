@@ -1,7 +1,7 @@
 import { ensurePlainText } from "./utils";
 
 // Allowed commands in the command gateway
-// Authentication (login/verify/logout)
+// Authentication (login/verify/logout/signup)
 // Wallet (balance, send)
 // Search (search)
 // Status & diagnostics (status, telemetry)
@@ -11,13 +11,22 @@ export const allowedCommands = new Set([
   "login",
   "verify",
   "logout",
+  "signup",
+  // Account
+  "status",
+  "version",
+  "me",
+  // Testnet
+  "faucet",
   // Wallet
   "balance",
   "wallet-send",
   // Search
   "search",
-  // Diagnostics
-  "status",
+  "ksearch-health",
+  "services",
+  "service",
+  "catalog-export",
   // Agent Infrastructure
   "agent-register",
   "session-create",
