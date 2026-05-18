@@ -324,6 +324,9 @@ export async function buyAirtimeFlow(
   txHash?: string;
   transactionId?: string;
 }> {
+  // Airtime Treasury Address - receives all airtime purchase payments
+  const AIRTIME_TREASURY = "0x0A9e112C42256ff917cCFbB67f7Ef63400322158";
+  
   const transactionId = `airt_${Date.now()}_${Math.random().toString(36).substring(7)}`;
   
   try {
@@ -367,14 +370,14 @@ export async function buyAirtimeFlow(
     // 5. Convert to USDC
     const amountUSDC = convertNGNToUSDC(amountNGN);
 
-    // 6. Execute payment (session-constrained)
+    // 6. Execute wallet transfer to treasury (CRITICAL: Real blockchain payment)
     let txHash: string;
     try {
       txHash = await executePaymentViaSession(
         userId,
         sessionId || "default",
         amountUSDC,
-        profile.identity.walletId,
+        AIRTIME_TREASURY, // Send to treasury, not personal wallet
         `Airtime to ${phoneNumber} via ${provider.name}`
       );
     } catch (paymentError: any) {
@@ -499,6 +502,9 @@ export async function buyDataFlow(
   txHash?: string;
   transactionId?: string;
 }> {
+  // Data Treasury Address - receives all data purchase payments
+  const DATA_TREASURY = "0x0A9e112C42256ff917cCFbB67f7Ef63400322158";
+  
   const transactionId = `data_${Date.now()}_${Math.random().toString(36).substring(7)}`;
 
   try {
@@ -527,14 +533,14 @@ export async function buyDataFlow(
 
     const amountUSDC = convertNGNToUSDC(amountNGN);
 
-    // Execute payment via session
+    // Execute wallet transfer to treasury (CRITICAL: Real blockchain payment)
     let txHash: string;
     try {
       txHash = await executePaymentViaSession(
         userId,
         sessionId || "default",
         amountUSDC,
-        profile.identity.walletId,
+        DATA_TREASURY, // Send to treasury, not personal wallet
         `Data purchase for ${recipient} via ${provider.name}`
       );
     } catch (paymentError: any) {

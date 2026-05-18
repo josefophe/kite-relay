@@ -32,8 +32,11 @@ services:
       
       # Runtime paths (SHARED with worker)
       - USER_DATA_ROOT=/data
-      - KPASS_BINARY=/usr/local/bin/kpass
-      - KSEARCH_BINARY=/usr/local/bin/ksearch
+      # - KPASS_BINARY=/usr/local/bin/kpass
+      # - KSEARCH_BINARY=/usr/local/bin/ksearch
+
+      - KPASS_BINARY=kpass
+      - KSEARCH_BINARY=ksearch
       
       # Network
       - PORT=3000

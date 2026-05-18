@@ -25,7 +25,7 @@ export interface AppConfig {
   dbType: "sqlite" | "postgres";
   
   // PHASE 3: LLM Configuration
-  llmProvider: "openai" | "anthropic";
+  llmProvider: "openai" | "anthropic" | "groq";
   llmApiKey: string;
   llmModel: string;
   llmMaxIterations: number;
@@ -50,9 +50,19 @@ if (isRelay && !process.env.TELEGRAM_BOT_TOKEN) {
 }
 
 // PHASE 3: LLM Configuration - default to OpenAI if not specified
-const llmProvider = (process.env.LLM_PROVIDER || "openai") as "openai" | "anthropic";
+const llmProvider = (process.env.LLM_PROVIDER || "openai") as "openai" | "anthropic" | "groq";
+
+// Validate LLM provider
+if (!["openai", "anthropic", "groq"].includes(llmProvider)) {
+  throw new Error(`Invalid LLM_PROVIDER: ${llmProvider}. Must be one of: openai, anthropic, groq`);
+}
+
 const llmApiKey = process.env.LLM_API_KEY || "";
-const llmModel = process.env.LLM_MODEL || (llmProvider === "openai" ? "gpt-4-turbo" : "claude-sonnet");
+const llmModel = process.env.LLM_MODEL || (
+  llmProvider === "openai" ? "gpt-4-turbo" : 
+  llmProvider === "anthropic" ? "claude-sonnet" :
+  "llama3-70b-8192"
+);
 
 // Database configuration
 const databaseUrl = process.env.DATABASE_URL || "sqlite:///data/agents.db";

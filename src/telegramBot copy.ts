@@ -78,95 +78,6 @@ import { orchestrateAIExecution, formatExecutionResult } from "./aiOrchestration
 export function createTelegramBot(botToken: string, enablePolling: boolean = true): TelegramBot {
   const bot = new TelegramBot(botToken, { polling: enablePolling });
 
-  const originalSendMessage = bot.sendMessage.bind(bot);
-  (bot as any).sendMessage = (chatId: number | string, text: string, options: TelegramBot.SendMessageOptions = {}) => {
-    return originalSendMessage(chatId, text, {
-      parse_mode: "Markdown",
-      disable_web_page_preview: true,
-      ...options,
-    });
-  };
-
-  const renderAutonomousHelp = (): string =>
-    `🤖 *KiteRelay Autonomous AI Assistant*
-` +
-    `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-` +
-    `I help you execute real commerce tasks using Kite AI, agents, and tool-based automation.
-
-` +
-    `*What you can ask me:*
-` +
-    `• Send payments → _Send @charity 5 USDC_
-` +
-    `• Transfer tokens → _Transfer 2 KITE to @john_
-` +
-    `• Check wallet → _What's my balance?_
-` +
-    `• Search services → _Find verified aid organizations_
-` +
-    `• Register agents → _Register autonomous trading agent_
-` +
-    `• Pay services → _Pay subscription to service X_
-
-` +
-    `*Getting started:*
-` +
-    `1. Run /login
-` +
-    `2. Run /agent-register trader
-` +
-    `3. Use natural language or /agent commands
-
-` +
-    `*Quick examples:*
-` +
-    `• Send @charity 5 USDC
-` +
-    `• Transfer 2 KITE to @john
-` +
-    `• Check my wallet
-` +
-    `• Find verified aid organizations
-` +
-    `• Register autonomous trading agent
-` +
-    `• Pay for API service
-` +
-    `• Search service ID
-`;
-
-  const renderExamplesHelp = (): string =>
-    `🚀 *KiteRelay Demo Examples*
-` +
-    `━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-` +
-    `*Payments*
-` +
-    `• Send @charity 5 USDC
-` +
-    `• Pay @vendor 2 KITE
-
-` +
-    `*Wallet*
-` +
-    `• What's my balance?
-
-` +
-    `*Search*
-` +
-    `• Find verified aid organizations
-` +
-    `• Search service ID for AI providers
-
-` +
-    `*Agents*
-` +
-    `• Register autonomous trading agent
-` +
-    `• /agent-create Monitor KITE balance every hour
-`;
-
   bot.on("message", async (msg: Message) => {
     const userId = msg.from?.id;
     if (!userId) {
@@ -201,54 +112,28 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
               );
             }
             
-            // Strings like '3UQ5QZUX' or '622KPDSZ' or '123456' will match here
-            const isOtpLike = /^[A-Z0-9]{4,12}$/.test(incomingText.toUpperCase()) && /[0-9]/.test(incomingText);
+            // Strings like '3UQ5QZUX' or '622KPDSZ' will now evaluate flawlessly here
+            const isOtpLike = /^[A-Z0-9]{4,12}$/.test(incomingText.toUpperCase());
             if (isOtpLike) {
-              const { loginId, signupId } = profile.pendingAuth;
-              
-              // SIGNUP FLOW: OTP is the exchange token, verify and complete signup
-              if (signupId && !loginId) {
+              if (!profile.pendingAuth.loginId) {
                 await bot.sendMessage(
                   msg.chat.id,
-                  "⏳ Completing signup with verification code..."
+                  "❌ Unable to complete verification because login metadata is missing. Please run /login again."
                 );
-                
-                try {
-                  const exchangeResult = await handleSignupExchange(userId, signupId, incomingText);
-                  const updatedProfile = readUserProfile(userId, config.userDataRoot);
-                  delete updatedProfile.pendingAuth;
-                  writeUserProfile(userId, config.userDataRoot, updatedProfile);
-                  await bot.sendMessage(msg.chat.id, exchangeResult.output);
-                } catch (signupError: unknown) {
-                  logger.error({ userId, signupId, error: signupError }, "signup verification failed");
-                  await bot.sendMessage(
-                    msg.chat.id,
-                    `❌ Signup verification failed: ${signupError instanceof Error ? signupError.message : "unexpected error"}`
-                  );
-                }
-                return;
-              }
-              
-              // LOGIN FLOW: Standard OTP verification
-              if (loginId) {
-                await bot.sendMessage(
-                  msg.chat.id,
-                  "⏳ Verification code received, authenticating your sandbox environment..."
-                );
-                const telegramUsername = msg.from?.username || undefined;
-                const result = await handleVerify(userId, loginId, incomingText, telegramUsername);
-                const updatedProfile = readUserProfile(userId, config.userDataRoot);
-                delete updatedProfile.pendingAuth;
-                writeUserProfile(userId, config.userDataRoot, updatedProfile);
-                await bot.sendMessage(msg.chat.id, result.output);
                 return;
               }
 
               await bot.sendMessage(
                 msg.chat.id,
-                "❌ Unable to complete verification because auth metadata is missing. Please run /login again."
+                "⏳ Verification code received, authenticating your sandbox environment..."
               );
-              return;
+              const telegramUsername = msg.from?.username || undefined;
+              const result = await handleVerify(userId, profile.pendingAuth.loginId, incomingText, telegramUsername);
+              const updatedProfile = readUserProfile(userId, config.userDataRoot);
+              delete updatedProfile.pendingAuth;
+              writeUserProfile(userId, config.userDataRoot, updatedProfile);
+              await bot.sendMessage(msg.chat.id, result.output);
+              return; 
             }
           }
         } catch (profileError) {
@@ -260,16 +145,69 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
       // ==============================================================
       // STANDARD ROUTING ENGINE LISTENER MATRIX
       // ==============================================================
-      if (
-        incomingText === "/start" ||
-        incomingText === "/help" ||
-        incomingText === "/ai-help" ||
-        incomingText === "/autonomous-help"
-      ) {
-        await bot.sendMessage(msg.chat.id, renderAutonomousHelp());
-      }
-      else if (incomingText === "/examples") {
-        await bot.sendMessage(msg.chat.id, renderExamplesHelp());
+      if (incomingText === "/start" || incomingText === "/help") {
+        await bot.sendMessage(
+          msg.chat.id,
+          `🔐 *KiteRelay - Autonomous Agent OS*\n` +
+            `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+            `Your isolated runtime. Autonomous agents. Real economy.\n\n` +
+            
+            `🎯 *QUICK START (Phase 2)*\n` +
+            `1. Login: \`/login email@domain.com\`\n` +
+            `2. Create agent: \`/agent-create Monitor KITE balance every hour\`\n` +
+            `3. List agents: \`/agent-list\`\n` +
+            `4. View results: \`/agent-logs ID\`\n\n` +
+            
+            `🤖 *Autonomous Agents*\n` +
+            `• \`/agent-create DESCRIPTION\` — Create agent\n` +
+            `• \`/agent-list\` — View all your agents\n` +
+            `• \`/agent-start ID\` — Enable agent\n` +
+            `• \`/agent-stop ID\` — Disable agent\n` +
+            `• \`/agent-delete ID\` — Delete agent\n` +
+            `• \`/agent-logs ID\` — View execution history\n` +
+            `• \`/agent-run ID\` — Trigger immediate execution\n\n` +
+            
+            `📝 *Authentication*\n` +
+            `• \`/login EMAIL\` — Authenticate with Kite Passport\n` +
+            `• \`/verify LOGIN\\_ID CODE\` — Verify with code\n` +
+            `• \`/logout\` — Clear session\n\n` +
+
+            `💳 *Wallet & Transactions*\n` +
+            `• \`/balance\` — Check wallet balance\n` +
+            `• \`/send @username AMOUNT ASSET\` — Send to user\n` +
+            `• \`/wallet-send ADDRESS AMOUNT ASSET\` — Send to address\n\n` +
+
+            `🔍 *Service Discovery*\n` +
+            `• \`/ksearch-health\` — Check ksearch runtime health\n` +
+            `• \`/services [query]\` — Discover AI services\n` +
+            `• \`/service <service-id>\` — Inspect one service\n` +
+            `• \`/catalog-export\` — Export service catalog to Markdown\n\n` +
+
+            `🛒 *Commerce (Phase 4)*\n` +
+            `• \`/buy-airtime PHONE AMOUNT provider\` — Buy airtime (NGN)\n` +
+            `  Examples: /buy-airtime 08012345678 3000 MTN\n` +
+            `            /buy-airtime +2348012345678 1000 GLO\n` +
+            `• \`/buy-data PHONE|@username SIZE provider\` — Buy mobile data\n` +
+            `  Examples: /buy-data 08012345678 2GB MTN\n` +
+            `            /buy-data @alice 1GB AIRTEL\n` +
+            `• \`/payment-history\` — View your commerce history\n` +
+            `• \`/auto-topup SIZE frequency provider\` — Create recurring top-up\n` +
+            `• \`/schedule-airtime AMOUNT frequency provider\` — Schedule airtime\n\n` +
+
+            `🛡️ *Programmable Sessions*\n` +
+            `• \`/session-create BUDGET TTL\\_HOURS\` — Spending session\n` +
+            `• \`/session-list\` — List active sessions\n` +
+            `• \`/session-use ID\` — Activate session\n` +
+            `• \`/session-execute URL\` — Execute with x402 payment\n\n` +
+            
+            `🔍 *Search & Status*\n` +
+            `• \`/search QUERY\` — Search information\n` +
+            `• \`/status\` — Runtime diagnostics\n\n` +
+            
+            `⚠️ All actions execute in your isolated sandboxed runtime.\n` +
+            `Multi-tenant isolation. Real wallet integration. Real economy.`,
+          { parse_mode: "Markdown" }
+        );
       }
 
       // ========== AUTHENTICATION: STEP 1 ==========
@@ -360,65 +298,7 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
           );
         }
       }
-      // ========== SIGNUP POLL (CHECK EMAIL VERIFICATION STATUS) ==========
-      else if (incomingText.startsWith("/signup-poll")) {
-        if (!ensurePrivateChat(msg.chat.type)) {
-          return await bot.sendMessage(
-            msg.chat.id,
-            "⚠️ For security, signup must be completed in a private chat."
-          );
-        }
-
-        const signupId = incomingText.split(" ").slice(1).join(" ").trim();
-        if (!signupId) {
-          return await bot.sendMessage(
-            msg.chat.id,
-            "Usage: /signup-poll <signup-id>\n\nCheck if your email verification is complete."
-          );
-        }
-
-        try {
-          const result = await handleSignupPoll(userId, signupId);
-          await bot.sendMessage(msg.chat.id, result.output);
-        } catch (error) {
-          logger.error({ userId, signupId, error }, "signup-poll failed");
-          await bot.sendMessage(
-            msg.chat.id,
-            `❌ Signup poll failed: ${error instanceof Error ? error.message : "unexpected error"}`
-          );
-        }
-      }
-      // ========== SIGNUP EXCHANGE (COMPLETE WITH VERIFICATION TOKEN) ==========
-      else if (incomingText.startsWith("/signup-exchange")) {
-        if (!ensurePrivateChat(msg.chat.type)) {
-          return await bot.sendMessage(
-            msg.chat.id,
-            "⚠️ For security, signup must be completed in a private chat."
-          );
-        }
-
-        const parts = incomingText.split(" ");
-        if (parts.length < 3) {
-          return await bot.sendMessage(
-            msg.chat.id,
-            "Usage: /signup-exchange <signup-id> <exchange-token>\n\nExample: /signup-exchange signup_abc123 token_xyz789"
-          );
-        }
-
-        const signupId = parts[1];
-        const exchangeToken = parts[2];
-
-        try {
-          const result = await handleSignupExchange(userId, signupId, exchangeToken);
-          await bot.sendMessage(msg.chat.id, result.output);
-        } catch (error) {
-          logger.error({ userId, signupId, error }, "signup-exchange failed");
-          await bot.sendMessage(
-            msg.chat.id,
-            `❌ Signup exchange failed: ${error instanceof Error ? error.message : "unexpected error"}`
-          );
-        }
-      }
+      // ========== LOGOUT ==========
       else if (msg.text === "/logout") {
         try {
           const result = await handleLogout(userId);

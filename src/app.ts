@@ -226,6 +226,15 @@ async function bootstrapRelay(): Promise<void> {
  * Bootstrap worker mode: Job queue processing only
  */
 async function bootstrapWorker(): Promise<void> {
+  // ════════════════════════════════════════════════════════════════
+  // CRITICAL SAFETY GUARD: WORKER MUST NOT POLL TELEGRAM
+  // ════════════════════════════════════════════════════════════════
+  if (config.telegramBotToken && config.enableTelegramPolling) {
+    logger.error("FATAL: Telegram polling enabled in worker mode! This causes ETELEGRAM 409 conflict.");
+    logger.error("Set IS_WORKER=true to disable polling, OR disable TELEGRAM_BOT_TOKEN in worker.");
+    process.exit(1);
+  }
+
   const app = express();
   setupMetrics(app);
 
@@ -257,6 +266,7 @@ async function bootstrapWorker(): Promise<void> {
     console.log("[BOOT] Worker mode (IS_WORKER):", process.env.IS_WORKER);
     console.log("[BOOT] DB Path:", dbPath);
     console.log("[BOOT] Redis URL:", config.redisUrl || "redis://localhost:6379");
+    console.log("[BOOT] ✓ Telegram polling: DISABLED");
 
     // ════════════════════════════════════════════════════════════════
     // 3. INITIALIZE AGENT STORAGE FIRST

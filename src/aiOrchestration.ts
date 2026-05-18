@@ -1,6 +1,7 @@
 import { generateText, tool } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { anthropic } from "@ai-sdk/anthropic";
+import { groq } from "@ai-sdk/groq";
 import { LanguageModel} from "ai";
 import { config } from "./config";
 import { logger } from "./logger";
@@ -56,6 +57,9 @@ export interface AIExecutionResult {
 function getLLMProvider(): LanguageModel {
   if (config.llmProvider === "anthropic") {
     return anthropic(config.llmModel);
+  }
+  if (config.llmProvider === "groq") {
+    return groq(config.llmModel);
   }
   return openai(config.llmModel);
 }
