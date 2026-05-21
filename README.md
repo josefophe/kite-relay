@@ -148,7 +148,8 @@ See **[ABOUT_HACKATHON.md](./About-hackathon.md)** for full context.
 
 ### **For Operations & Deployment**
 
-- **Docker Compose** (`docker-compose.yml`) — Full stack with Redis, SQLite, relay + workers
+- **Docker Compose for Linux/wsl2** (`docker-compose.yml`) — Full stack with Redis, SQLite, relay + workers
+- **Docker Compose for mac users** [docker-compose-mac](./Docs/docker-compose-mac.txt) — Copy and paste this to your (`docker-compose.yml`)
 - **Health checks** — `/health` endpoint available at `http://localhost:3000/health`
 - **Logs** — Pino JSON logging to stdout; structured for observability
 
