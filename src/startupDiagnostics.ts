@@ -161,7 +161,7 @@ async function testRedisConnectivity(): Promise<boolean> {
  */
 function testKpassBinaryAvailable(): boolean {
   try {
-    const output = execSync(`${config.kpassBinary} version`, {
+    const output = execSync(`${config.kpassBinary} --version`, {
       timeout: 5000,
       stdio: "pipe",
     }).toString().trim();

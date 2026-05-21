@@ -71,7 +71,7 @@ export function getUserDebugInfo(userId: number): DebugInfo {
   // Check kpass availability
   let kpassOk = false;
   try {
-    execSync(`${config.kpassBinary} version`, { stdio: "pipe", timeout: 5000 });
+    execSync(`${config.kpassBinary} --version`, { stdio: "pipe", timeout: 5000 });
     kpassOk = true;
   } catch {
     warnings.push(`kpass binary not available at ${config.kpassBinary}`);

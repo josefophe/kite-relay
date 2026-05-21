@@ -27,7 +27,25 @@ export interface UserProfile {
     commands: string[];
     balances: string[];
   };
+  telegramUsername?: string;
   pendingAuth?: PendingAuth;
+
+  budgets?: {
+    daily?: any;
+    weekly?: any;
+    monthly?: any;
+  };
+
+  pendingConfirmations?: any[]; // For confirmationService.ts
+  rateLimitRecords?: any[];     // For rateLimitService.ts
+  firstTimeTracking?: {
+    shownPrompts: string[];
+    dismissedPrompts: string[];
+    lastShownAt?: number;
+  };
+  onboarding?: any; // onboarding state is managed by onboardingService and may contain nested progress data
+
+  transactions?: any[]; // For transactionHistoryService.ts
 }
 
 export interface UserPaths {

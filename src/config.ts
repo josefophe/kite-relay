@@ -49,8 +49,8 @@ if (isRelay && !process.env.TELEGRAM_BOT_TOKEN) {
   throw new Error(`Missing required environment variable for relay: TELEGRAM_BOT_TOKEN`);
 }
 
-// PHASE 3: LLM Configuration - default to OpenAI if not specified
-const llmProvider = (process.env.LLM_PROVIDER || "openai") as "openai" | "anthropic" | "groq";
+// PHASE 3: LLM Configuration - default to Groq if not specified
+const llmProvider = (process.env.LLM_PROVIDER || "groq") as "openai" | "anthropic" | "groq";
 
 // Validate LLM provider
 if (!["openai", "anthropic", "groq"].includes(llmProvider)) {

@@ -29,6 +29,7 @@ export const allowedCommands = new Set([
   "catalog-export",
   // Agent Infrastructure
   "agent-register",
+  "agent-list",
   "session-create",
   "session-list",
   "session-status",

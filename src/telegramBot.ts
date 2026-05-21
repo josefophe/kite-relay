@@ -46,14 +46,42 @@ import {
   handleBuyAirtime,
   handleBuyData,
   handlePaymentHistory,
+  handleOnboardingStart,
+  handleOnboardingTutorial,
+  handleOnboardingSetup,
+  handleOnboardingProgress,
+  handleOnboardingHelp,
+  handleOnboardingNext,
+  handleOnboardingSkip,
+  handleOnboardingGuide,
 } from "./commandGateway";
-import { ensurePrivateChat } from "./utils";
+import { ensurePrivateChat, isHelpRequest } from "./utils";
 
 import { readUserProfile, writeUserProfile } from "./storage";
 import { config } from "./config";
 import { getContextManager, initializeContextManager } from "./conversationContext";
 import { createToolRegistry } from "./toolRegistry";
 import { orchestrateAIExecution, formatExecutionResult } from "./aiOrchestration";
+
+// ════════════════════════════════════════════════════════════════
+// PHASE 3 IMPORTS: Skills Layer Integration
+// ════════════════════════════════════════════════════════════════
+import { resolveIntent } from "./intentResolver";
+import {
+  formatTelegramResponse,
+  formatErrorResponse,
+} from "./telegramFormatter";
+
+// ════════════════════════════════════════════════════════════════
+// PHASE 5 IMPORTS: User Onboarding & Guidance
+// ════════════════════════════════════════════════════════════════
+import {
+  shouldShowPrompt,
+  getPrompt,
+  formatPrompt,
+  FirstTimeEvent,
+  dismissPrompt,
+} from "./firstTimePromptsService";
 
 /**
  * Create Telegram bot with per-user isolated runtime support
@@ -260,12 +288,117 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
       // ==============================================================
       // STANDARD ROUTING ENGINE LISTENER MATRIX
       // ==============================================================
-      if (
-        incomingText === "/start" ||
-        incomingText === "/help" ||
-        incomingText === "/ai-help" ||
-        incomingText === "/autonomous-help"
-      ) {
+      
+      // ========== PHASE 5: ONBOARDING - START ==========
+      if (incomingText === "/start") {
+        try {
+          const result = await handleOnboardingStart(userId);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+        } catch (error) {
+          logger.error({ userId, error }, "onboarding start failed");
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Onboarding failed: ${error instanceof Error ? error.message : "unexpected error"}`
+          );
+        }
+      }
+      // ========== PHASE 5: ONBOARDING - TUTORIAL ==========
+      else if (incomingText.startsWith("/tutorial")) {
+        try {
+          const args = incomingText.split(" ").slice(1);
+          const result = await handleOnboardingTutorial(userId, args[0]);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+        } catch (error) {
+          logger.error({ userId, error }, "tutorial failed");
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Tutorial error: ${error instanceof Error ? error.message : "unexpected error"}`
+          );
+        }
+      }
+      // ========== PHASE 5: ONBOARDING - SETUP FLOWS ==========
+      else if (incomingText.startsWith("/setup")) {
+        try {
+          const args = incomingText.split(" ").slice(1);
+          const result = await handleOnboardingSetup(userId, args[0]);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+        } catch (error) {
+          logger.error({ userId, error }, "setup flow failed");
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Setup error: ${error instanceof Error ? error.message : "unexpected error"}`
+          );
+        }
+      }
+      // ========== PHASE 5: ONBOARDING - PROGRESS ==========
+      else if (incomingText === "/progress") {
+        try {
+          const result = await handleOnboardingProgress(userId);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+        } catch (error) {
+          logger.error({ userId, error }, "progress check failed");
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Progress error: ${error instanceof Error ? error.message : "unexpected error"}`
+          );
+        }
+      }
+      // ========== PHASE 5: ONBOARDING - HELP ==========
+      else if (incomingText === "/help" || incomingText.startsWith("/help ")) {
+        try {
+          const args = incomingText.split(" ").slice(1);
+          const result = await handleOnboardingHelp(userId, args[0]);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+        } catch (error) {
+          logger.error({ userId, error }, "help failed");
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Help error: ${error instanceof Error ? error.message : "unexpected error"}`
+          );
+        }
+      }
+      // ========== PHASE 5: ONBOARDING - NEXT (ADVANCE) ==========
+      else if (incomingText === "/next") {
+        try {
+          const result = await handleOnboardingNext(userId);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+        } catch (error) {
+          logger.error({ userId, error }, "next step failed");
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Advance error: ${error instanceof Error ? error.message : "unexpected error"}`
+          );
+        }
+      }
+      // ========== PHASE 5: ONBOARDING - SKIP ==========
+      else if (incomingText === "/skip") {
+        try {
+          const result = await handleOnboardingSkip(userId);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+        } catch (error) {
+          logger.error({ userId, error }, "skip flow failed");
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Skip error: ${error instanceof Error ? error.message : "unexpected error"}`
+          );
+        }
+      }
+      // ========== PHASE 5: ONBOARDING - GUIDE ==========
+      else if (incomingText.startsWith("/guide")) {
+        try {
+          const args = incomingText.split(" ").slice(1);
+          const result = await handleOnboardingGuide(userId, args[0]);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+        } catch (error) {
+          logger.error({ userId, error }, "guide failed");
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Guide error: ${error instanceof Error ? error.message : "unexpected error"}`
+          );
+        }
+      }
+      // ========== LEGACY HELP COMMANDS ==========
+      else if (incomingText === "/ai-help" || incomingText === "/autonomous-help") {
         await bot.sendMessage(msg.chat.id, renderAutonomousHelp());
       }
       else if (incomingText === "/examples") {
@@ -478,6 +611,15 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
             } catch {
               // If not JSON, send as-is
               await bot.sendMessage(msg.chat.id, `💰 Balance:\n${result.output}`);
+            }
+            
+            // ========== PHASE 5: First-Time Wallet Check Prompt ==========
+            if (await shouldShowPrompt(userId, FirstTimeEvent.WALLET_CHECK)) {
+              const prompt = await getPrompt(userId, FirstTimeEvent.WALLET_CHECK);
+              if (prompt) {
+                await bot.sendMessage(msg.chat.id, formatPrompt(prompt), { parse_mode: "Markdown" });
+                await dismissPrompt(userId, FirstTimeEvent.WALLET_CHECK);
+              }
             }
           } else {
             await bot.sendMessage(msg.chat.id, `❌ ${result.output}`);
@@ -750,6 +892,15 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
         try {
           const result = await handleWalletSend(userId, toAddress, amount, asset);
           await bot.sendMessage(msg.chat.id, result.output);
+          
+          // ========== PHASE 5: First-Time Transfer Prompt ==========
+          if (result.success && await shouldShowPrompt(userId, FirstTimeEvent.FIRST_TRANSFER)) {
+            const prompt = await getPrompt(userId, FirstTimeEvent.FIRST_TRANSFER);
+            if (prompt) {
+              await bot.sendMessage(msg.chat.id, formatPrompt(prompt), { parse_mode: "Markdown" });
+              await dismissPrompt(userId, FirstTimeEvent.FIRST_TRANSFER);
+            }
+          }
         } catch (error) {
           logger.error({ userId, error }, "wallet send failed");
           await bot.sendMessage(
@@ -788,8 +939,17 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
         }
 
         try {
-          const result = await handleSendToUsername(userId, username, amount, asset, bot);
+          const result = await handleSendToUsername(userId, username, amount, asset);
           await bot.sendMessage(msg.chat.id, result.output);
+          
+          // ========== PHASE 5: First-Time Transfer Prompt ==========
+          if (result.success && await shouldShowPrompt(userId, FirstTimeEvent.FIRST_TRANSFER)) {
+            const prompt = await getPrompt(userId, FirstTimeEvent.FIRST_TRANSFER);
+            if (prompt) {
+              await bot.sendMessage(msg.chat.id, formatPrompt(prompt), { parse_mode: "Markdown" });
+              await dismissPrompt(userId, FirstTimeEvent.FIRST_TRANSFER);
+            }
+          }
         } catch (error) {
           logger.error({ userId, username, error }, "send to username failed");
           await bot.sendMessage(
@@ -1126,6 +1286,8 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
             handleUserSessions,
             handleWalletSend,
             handleSendToUsername,
+            handleAgentRegister,
+            handleAgentCreate,
             handleSessionCreate,
             handleSessionList,
             handleSessionStatusCheck,
@@ -1184,6 +1346,113 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
 
         } catch (error: unknown) {
           logger.error({ userId, error }, "AI agent orchestration failed");
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Agent error: ${error instanceof Error ? error.message : "unexpected error"}`
+          );
+        }
+      }
+      // ========== FALLBACK: NATURAL LANGUAGE AI ORCHESTRATION ==========
+      else if (!incomingText.startsWith("/")) {
+        // Route natural language messages to AI orchestration
+        if (!ensurePrivateChat(msg.chat.type)) {
+          return await bot.sendMessage(
+            msg.chat.id,
+            "⚠️ For security, AI operations must be completed in a private chat."
+          );
+        }
+
+        try {
+          // Check authentication first
+          const profile = readUserProfile(userId, config.userDataRoot);
+          const isAuthenticated = profile && profile.identity && profile.identity.passportId;
+          if (!isAuthenticated) {
+            return await bot.sendMessage(
+              msg.chat.id,
+              "❌ Not authenticated.\nPlease run /login and /verify first."
+            );
+          }
+
+          // Show typing indicator
+          await bot.sendChatAction(msg.chat.id, "typing");
+
+          // Initialize context manager if needed
+          const contextManager = getContextManager();
+
+          // Create tool registry with handlers
+          const toolHandlers: Record<string, Function> = {
+            handleBalance,
+            handleSearch,
+            handleKsearchServicesList,
+            handleKsearchServiceGet,
+            handleKsearchCatalogExport,
+            handleStatus,
+            handleVersion,
+            handleMe,
+            handleFaucetDrop,
+            handleUserSessions,
+            handleWalletSend,
+            handleSendToUsername,
+            handleAgentRegister,
+            handleAgentCreate,
+            handleSessionCreate,
+            handleSessionList,
+            handleSessionStatusCheck,
+            handleSessionExecute,
+            handleAgentList,
+            handleBuyAirtime,
+            handleBuyData,
+            handlePaymentHistory,
+          };
+
+          const toolRegistry = createToolRegistry(toolHandlers);
+
+          // Get user context and history
+          const userContext = contextManager.getContext(userId);
+          const conversationHistory = contextManager.getHistoryForLLM(userId) as { role: "user" | "assistant"; content: string }[];
+
+          // Prepare execution context with natural language message
+          const executionContext = {
+            userId,
+            userMessage: incomingText,
+            conversationHistory,
+            activeSession: userContext.activeSession,
+            wallet: userContext.lastWalletState
+          };
+
+          // Execute AI orchestration
+          logger.info({ userId, userMessage: incomingText }, "AI agent orchestration starting (natural language)");
+          const result = await orchestrateAIExecution(
+            executionContext,
+            toolRegistry,
+            contextManager
+          );
+
+          // Add to conversation history
+          contextManager.addMessage(userId, "user", incomingText);
+          contextManager.addMessage(userId, "assistant", result.output);
+
+          // Format and send response
+          const formattedResponse = formatExecutionResult(result);
+
+          // Split long messages (Telegram limit is 4096 chars)
+          const maxLength = 4000;
+          if (formattedResponse.length > maxLength) {
+            const chunks = formattedResponse.match(new RegExp(`.{1,${maxLength}}`, "g")) || [];
+            for (const chunk of chunks) {
+              await bot.sendMessage(msg.chat.id, chunk, { parse_mode: "Markdown" });
+            }
+          } else {
+            await bot.sendMessage(msg.chat.id, formattedResponse, { parse_mode: "Markdown" });
+          }
+
+          logger.info(
+            { userId, success: result.success, toolsUsed: result.toolsExecuted.length },
+            "telemetry: AI agent execution completed (natural language)"
+          );
+
+        } catch (error: unknown) {
+          logger.error({ userId, error }, "AI agent orchestration failed (natural language)");
           await bot.sendMessage(
             msg.chat.id,
             `❌ Agent error: ${error instanceof Error ? error.message : "unexpected error"}`

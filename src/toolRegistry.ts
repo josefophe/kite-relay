@@ -191,8 +191,12 @@ export class ToolRegistry {
       timeout: 30000,
       handler: async (userId: number, args: Record<string, unknown>) => {
         const handleWalletSend = handlers.handleWalletSend as Function;
-        const textArgs = `${args.recipientAddress} ${args.amount} ${args.asset}`;
-        return handleWalletSend(userId, textArgs);
+        return handleWalletSend(
+          userId,
+          String(args.recipientAddress || ""),
+          String(args.amount || ""),
+          String(args.asset || "")
+        );
       }
     });
 
@@ -210,7 +214,11 @@ export class ToolRegistry {
           },
           amount: {
             type: "string",
-            description: "Amount to send (e.g., '5 KITE')"
+            description: "Amount to send (e.g., '5 USDC' or '5 KITE')"
+          },
+          asset: {
+            type: "string",
+            description: "Optional asset symbol if not included in amount"
           }
         },
         required: ["username", "amount"]
@@ -221,8 +229,12 @@ export class ToolRegistry {
       timeout: 30000,
       handler: async (userId: number, args: Record<string, unknown>) => {
         const handleSendToUsername = handlers.handleSendToUsername as Function;
-        const textArgs = `${args.username} ${args.amount}`;
-        return handleSendToUsername(userId, textArgs);
+        return handleSendToUsername(
+          userId,
+          String(args.username || ""),
+          String(args.amount || ""),
+          args.asset ? String(args.asset) : undefined
+        );
       }
     });
 
@@ -407,6 +419,56 @@ export class ToolRegistry {
     });
 
     // ========== SESSION TOOLS ==========
+
+    this.register({
+      name: "agentRegister",
+      typeName: "agentRegister",
+      description: "Register a new autonomous agent type for your wallet",
+      category: "agent",
+      parameters: {
+        type: "object",
+        properties: {
+          type: {
+            type: "string",
+            description: "Agent type label (e.g., 'trader', 'research-agent')"
+          }
+        },
+        required: ["type"]
+      },
+      requiresSession: false,
+      requiresAuthentication: true,
+      economicAction: false,
+      timeout: 20000,
+      handler: async (userId: number, args: Record<string, unknown>) => {
+        const handleAgentRegister = handlers.handleAgentRegister as Function;
+        return handleAgentRegister(userId, String(args.type || ""));
+      }
+    });
+
+    this.register({
+      name: "agentCreate",
+      typeName: "agentCreate",
+      description: "Create a scheduled autonomous agent with a natural language goal",
+      category: "agent",
+      parameters: {
+        type: "object",
+        properties: {
+          description: {
+            type: "string",
+            description: "Description of what the agent should do"
+          }
+        },
+        required: ["description"]
+      },
+      requiresSession: false,
+      requiresAuthentication: false,
+      economicAction: false,
+      timeout: 20000,
+      handler: async (userId: number, args: Record<string, unknown>) => {
+        const handleAgentCreate = handlers.handleAgentCreate as Function;
+        return handleAgentCreate(userId, String(args.description || ""));
+      }
+    });
 
     this.register({
       name: "sessionCreate",

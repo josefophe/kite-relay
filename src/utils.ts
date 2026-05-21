@@ -24,6 +24,27 @@ export function ensurePrivateChat(chatType: string | undefined): boolean {
   return chatType === "private";
 }
 
+export function isHelpRequest(text: string): boolean {
+  if (!text || typeof text !== "string") return false;
+  const normalized = text.trim().toLowerCase();
+  const triggers = [
+    "help",
+    "help me",
+    "what can you do",
+    "what do you do",
+    "how do i",
+    "show me",
+    "examples",
+    "ai help",
+    "autonomous help",
+    "what are my options",
+    "guide me",
+    "support",
+    "start"
+  ];
+  return triggers.some(trigger => normalized === trigger || normalized.startsWith(`${trigger} `) || normalized.includes(trigger));
+}
+
 /**
  * SECURITY: Validate email format
  * Prevents prompt injection and malformed commands

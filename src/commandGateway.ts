@@ -8,6 +8,36 @@ import path from "path";
 import fs from "fs";
 import { getAgentStorage } from "./agentStorage";
 import { getScheduler } from "./scheduler";
+import { isValidEmail, isValidPhoneNumber } from "./utils";
+
+// ════════════════════════════════════════════════════════════════
+// PHASE 5 IMPORTS: Onboarding & First-Time Prompts
+// ════════════════════════════════════════════════════════════════
+import {
+  initializeOnboarding,
+  getOnboardingStatus,
+  startFlow,
+  completeStep,
+  getCurrentStep,
+  formatOnboardingStatus,
+  formatStep,
+  OnboardingFlow,
+  enrollTutorial,
+  getTutorialProgress,
+  formatTutorialProgress,
+} from "./onboardingService";
+
+import {
+  getPrompt,
+  dismissPrompt,
+  FirstTimeEvent,
+  formatPrompt,
+} from "./firstTimePromptsService";
+
+import {
+  handleOnboarding,
+  formatOnboardingResponse,
+} from "./skills/onboarding";
 
 export interface CommandResult {
   success: boolean;
@@ -16,11 +46,17 @@ export interface CommandResult {
 }
 
 /**
- * Helper utility to securely assert if an isolated runtime configuration exists
+ * Helper utility to check if user is authenticated
+ * FIXED: Checks profile.identity instead of file path
+ * (authentication is stored in user profile during /verify, not in filesystem)
  */
 function assertAuthentication(userId: number): { exists: boolean; path: string } {
-  const kpassConfigPath = `/data/users/${userId}/workspace/.kite-passport/config.json`;
-  return { exists: fs.existsSync(kpassConfigPath), path: kpassConfigPath };
+  const profile = readUserProfile(userId, config.userDataRoot);
+  const isAuthenticated = profile && profile.identity && profile.identity.passportId;
+  return { 
+    exists: !!isAuthenticated, 
+    path: `profile.identity.passportId: ${profile?.identity?.passportId || 'not set'}` 
+  };
 }
 
 /**
@@ -34,7 +70,9 @@ export async function handleLoginInit(userId: number, email: string): Promise<Co
   }
 
   const sanitized = email.trim().toLowerCase();
-  if (!sanitized || !sanitized.includes("@")) {
+  
+  // SECURITY: Validate email format
+  if (!isValidEmail(sanitized)) {
     return { success: false, output: "Please provide a valid email address.\nUsage: /login user@example.com" };
   }
 
@@ -75,6 +113,56 @@ export async function handleLoginInit(userId: number, email: string): Promise<Co
     return { success: true, output: formattedOutput };
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : String(error);
+    
+    // If user doesn't exist (exit code 4), suggest signup instead
+    if (errorMsg.includes("Command exited with code 4")) {
+      logger.info({ userId, email: sanitized }, "user not found, suggesting signup");
+      
+      // Automatically initiate signup for new users
+      try {
+        const signupOutput = await executeKpass(userId, ["signup", "init", "--email", sanitized, "--output", "json"], "signup-init");
+        let signupId = "";
+        try {
+          const response = JSON.parse(signupOutput);
+          signupId = response.signupId || response.signup_id || "";
+        } catch {
+          // Continue even if we can't parse signup ID
+        }
+
+        // Save the pending signupId to profile
+        const profile = readUserProfile(userId, config.userDataRoot);
+        if (!profile.preferences) {
+          profile.preferences = { locale: "en-US" };
+        }
+        
+        profile.pendingAuth = {
+          signupId,
+          email: sanitized,
+          createdAt: Date.now(),
+        };
+        writeUserProfile(userId, config.userDataRoot, profile);
+
+        logger.info({ userId, email: sanitized, durationMs: Date.now() - startTime }, "telemetry: new user auto-signup initiated");
+
+        return {
+          success: true,
+          output: 
+            `👋 *Welcome to Kite!*\n\n` +
+            `This appears to be your first time. I'm starting your signup process instead.\n\n` +
+            `📨 *Email verification initiated*\n` +
+            `Please check *${sanitized}* for a verification code.\n\n` +
+            `👉 *Reply to this message* or just type your verification code here:`,
+        };
+      } catch (signupError: unknown) {
+        const signupErrorMsg = signupError instanceof Error ? signupError.message : String(signupError);
+        logger.error({ userId, email: sanitized, error: signupErrorMsg }, "auto-signup failed");
+        return { 
+          success: false, 
+          output: `New user signup failed: ${signupErrorMsg}\n\nPlease try again with /login or contact support.` 
+        };
+      }
+    }
+
     logger.error({ userId, email: sanitized, durationMs: Date.now() - startTime, error: errorMsg }, "telemetry: login initialization crashed");
     return { success: false, output: `Login initialization failed: ${errorMsg}` };
   }
@@ -125,9 +213,10 @@ export async function handleVerify(userId: number, loginId: string, code: string
     };
     delete profile.pendingAuth;
     
-    // Store Telegram username if provided (for /send @username lookups)
+    // Store Telegram identity for username-based transfers
+    profile.telegramId = userId;
     if (telegramUsername) {
-      (profile as any).telegramUsername = telegramUsername;
+      profile.telegramUsername = telegramUsername;
     }
     
     writeUserProfile(userId, config.userDataRoot, profile);
@@ -174,18 +263,26 @@ export async function handleBalance(userId: number): Promise<CommandResult> {
 
     try {
       const data = JSON.parse(output);
-      if (data.status === "success" && Array.isArray(data.assets)) {
+      if (data?.status === "success" && Array.isArray(data?.assets)) {
+        const walletAddress = String(data.wallet_address || "unknown").substring(0, 50);
         let message = `💰 Wallet Balance\n`;
         message += `==============================\n`;
-        message += `📍 Address: ${data.wallet_address}\n\n`;
+        message += `📍 Address: ${walletAddress}\n\n`;
 
-        data.assets.forEach((asset: any) => {
-          const balanceNum = parseFloat(asset.balance);
-          if (balanceNum > 0 || asset.native) {
-            const icon = asset.native ? "💎" : "🪙";
-            message += `${icon} ${asset.symbol}: ${asset.balance}\n`;
-          }
-        });
+        if (Array.isArray(data.assets) && data.assets.length > 0) {
+          data.assets.forEach((asset: any) => {
+            if (!asset) return;
+            const balance = String(asset.balance || "0");
+            const balanceNum = parseFloat(balance);
+            if (balanceNum > 0 || asset.native) {
+              const icon = asset.native ? "💎" : "🪙";
+              const symbol = String(asset.symbol || "UNKNOWN").substring(0, 20);
+              message += `${icon} ${symbol}: ${balance}\n`;
+            }
+          });
+        } else {
+          message += `No assets with positive balance.\n`;
+        }
 
         return { success: true, output: message };
       }
@@ -193,7 +290,8 @@ export async function handleBalance(userId: number): Promise<CommandResult> {
       logger.warn({ userId, parseError }, "telemetry: failed parsing custom raw wallet balance output string structural types");
     }
 
-    return { success: true, output: `💰 Wallet Balance Raw Dump:\n\n${output}` };
+    const sanitized = output.substring(0, 1000);
+    return { success: true, output: `💰 Wallet Balance Raw Dump:\n\n${sanitized}` };
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     logger.error({ userId, durationMs: Date.now() - startTime, error: errorMsg }, "telemetry: balance transaction request crashed");
@@ -240,20 +338,20 @@ export async function handleSearch(userId: number, query: string): Promise<Comma
       return { success: true, output: `🔎 No services found for: "${sanitized}"` };
     }
 
-    const message = `🔎 Search Results for: *${sanitized}*\n` +
+    const message = `🔎 Search Results for: ${sanitized}\n` +
       "━━━━━━━━━━━━━━━━━━━━━━\n" +
       services
         .slice(0, 10)
         .map((service: any, index: number) => {
-          const name = String(service.name || service.title || service.service_id || service.id || "Unknown");
-          const serviceId = String(service.service_id || service.id || "unknown");
-          const categories = Array.isArray(service.categories)
-            ? service.categories.join(", ")
-            : String(service.tags || "-");
-          const url = String(service.url || service.endpoint || service.base_url || "");
+          const name = String(service?.name || service?.title || service?.service_id || service?.id || "Unknown").substring(0, 100);
+          const serviceId = String(service?.service_id || service?.id || "unknown").substring(0, 50);
+          const categories = Array.isArray(service?.categories)
+            ? service.categories.slice(0, 5).join(", ")
+            : String(service?.tags || "-").substring(0, 100);
+          const url = String(service?.url || service?.endpoint || service?.base_url || "").substring(0, 100);
 
-          return `*${index + 1}. ${name}*\n` +
-            `ID: \`${serviceId}\`\n` +
+          return `${index + 1}. ${name}\n` +
+            `ID: ${serviceId}\n` +
             `Tags: ${categories}\n` +
             (url ? `URL: ${url}\n` : "");
         })
@@ -746,6 +844,10 @@ export async function handleLogout(userId: number): Promise<CommandResult> {
  */
 export async function handleStatus(userId: number): Promise<CommandResult> {
   const authStatus = assertAuthentication(userId);
+  if (!authStatus.exists) {
+    return { success: false, output: "❌ Not authenticated. Please run /login first." };
+  }
+
   const startTime = Date.now();
   try {
     const output = await executeKpass(userId, ["status", "--output", "json"], "status");
@@ -756,7 +858,17 @@ export async function handleStatus(userId: number): Promise<CommandResult> {
       // Fallback to plain text
     }
 
-    const summary = parsed ? JSON.stringify(parsed, null, 2) : output.trim();
+    let summary = "No status data available";
+    if (parsed && typeof parsed === "object") {
+      const keys = Object.keys(parsed).slice(0, 10);
+      summary = keys.map((key: string) => {
+        const val = String(parsed[key] || "").substring(0, 100);
+        return `${key}: ${val}`;
+      }).join("\n");
+    } else if (output) {
+      summary = output.trim().substring(0, 500);
+    }
+
     return {
       success: true,
       output: `📊 System Status\n━━━━━━━━━━━━━━━━\n${summary}`,
@@ -831,7 +943,9 @@ export async function handleSignupInit(userId: number, email: string): Promise<C
   }
 
   const sanitized = email.trim().toLowerCase();
-  if (!sanitized || !sanitized.includes("@")) {
+  
+  // SECURITY: Validate email format
+  if (!isValidEmail(sanitized)) {
     return { success: false, output: "Please provide a valid email address.\nUsage: /signup email@domain.com" };
   }
 
@@ -1162,24 +1276,30 @@ export async function handleAgentRegister(userId: number, agentType: string): Pr
 
     try {
       const response = JSON.parse(output);
-      const agentId = response.agent_id || response.id || "unknown";
+      let agentId = response.agent_id || response.id || "unknown";
+      // Sanitize agentId to avoid Telegram markdown parsing errors
+      agentId = agentId.replace(/[`*_[\]()~>#+=|{}.!]/g, "").substring(0, 50);
       return {
         success: true,
         output:
           `🤖 Agent Registered\n` +
-          `━━━━━━━━━━━━━━━━━━━\n` +
           `Type: ${sanitized}\n` +
           `Agent ID: ${agentId}\n` +
           `Status: Active\n` +
           `\nYou can now create spending sessions for this agent.`,
       };
     } catch {
-      return { success: true, output };
+      const fallbackOutput = output.replace(/[`*_[\]()~>#+=|{}.!]/g, "").substring(0, 200);
+      return { success: true, output: fallbackOutput };
     }
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : String(error);
+    // Sanitize error message to avoid Telegram markdown parsing errors
+    const sanitizedError = errorMsg
+      .replace(/[`*_[\]()~>#+=|{}.!]/g, "")  // Remove markdown special chars
+      .substring(0, 100);  // Limit length
     logger.error({ userId, agentType: sanitized, error: errorMsg }, "telemetry: agent registration failed");
-    return { success: false, output: `Agent registration failed: ${errorMsg}` };
+    return { success: false, output: `Agent registration failed: ${sanitizedError}` };
   }
 }
 
@@ -1210,47 +1330,15 @@ export async function handleSessionCreate(
 
   const startTime = Date.now();
   try {
-    // CRITICAL FIX: Validate agent registration BEFORE trying to create session
-    // kpass agent:session requires a registered agent to exist
-    logger.debug({ userId }, "checking registered agents before session creation");
-    
-    let agentRegistered = false;
-    try {
-      const agentsJson = await executeKpass(userId, ["user", "agents", "--output", "json"], "pre-session-check");
-      const agents = JSON.parse(agentsJson);
-      agentRegistered = Array.isArray(agents) && agents.length > 0;
-      
-      logger.info(
-        { userId, agentCount: Array.isArray(agents) ? agents.length : 0 },
-        "agent registration check"
-      );
-    } catch (checkError) {
-      const checkMsg = checkError instanceof Error ? checkError.message : String(checkError);
-      
-      // Exit code 3 = auth error. But if we got here, auth passed balance check
-      // So likely the actual issue is no agent registered
-      logger.warn({ userId, checkError: checkMsg }, "agent check failed");
-      
-      // Don't fail here, let the session-create attempt and capture real error
-      agentRegistered = false;
+    const maxAmountNum = parseFloat(maxAmountPerTx);
+    if (isNaN(maxAmountNum) || maxAmountNum <= 0) {
+      return { success: false, output: "❌ Invalid max amount. Provide a positive number." };
     }
 
-    if (!agentRegistered) {
-      // Return helpful message BEFORE attempting session-create
-      return {
-        success: false,
-        output:
-          `❌ No Agent Registered\n` +
-          `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-          `Sessions require a registered agent.\n\n` +
-          `👉 First, register an agent:\n` +
-          `\`/agent-register trader\`\n\n` +
-          `Then try session creation again:\n` +
-          `\`/session-create ${maxAmountPerTx} ${ttl}\``,
-      };
-    }
+    // NOTE: Agent validation moved to kpass - it will return a clear error if no agent exists
+    // This avoids timing issues where a newly-registered agent might not be immediately queryable
 
-    const maxTotal = (parseFloat(maxAmountPerTx) * 5).toString();
+    const maxTotal = (maxAmountNum * 5).toString();
     
     const args = [
       "agent:session",
@@ -1284,20 +1372,22 @@ export async function handleSessionCreate(
 
     try {
       const response = JSON.parse(output);
-      const requestId = response.request_id || response.id || "unknown";
+      const requestId = String(response?.request_id || response?.id || "unknown").substring(0, 50);
+      const displayTtl = String(ttl || "unknown").substring(0, 50);
       return {
         success: true,
         output:
           `💳 Spending Session Created\n` +
           `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
           `Request ID: ${requestId}\n` +
-          `Max/TX: ${maxAmountPerTx}\n` +
-          `TTL: ${ttl}\n` +
+          `Max per TX: ${maxAmountPerTx}\n` +
+          `TTL: ${displayTtl}\n` +
           `Status: Pending Approval\n` +
           `\nCheck approval with: /session-status ${requestId}`,
       };
     } catch {
-      return { success: true, output };
+      const sanitized = output.substring(0, 500);
+      return { success: true, output: sanitized };
     }
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -1612,16 +1702,42 @@ export async function handleWalletSend(
     };
   }
 
+  // SECURITY: Validate wallet address format
+  const sanitizedAddress = toAddress.trim();
+  if (!sanitizedAddress.match(/^0x[0-9a-fA-F]{40}$/)) {
+    return {
+      success: false,
+      output: `❌ Invalid wallet address format.\n\nExpected: 0x + 40 hexadecimal characters\nExample: 0x${Array(40).fill("0").join("")}`,
+    };
+  }
+
+  // SECURITY: Validate amount is a positive number
+  const parsedAmount = parseFloat(amount);
+  if (isNaN(parsedAmount) || parsedAmount <= 0) {
+    return {
+      success: false,
+      output: `❌ Invalid amount. Must be a positive number.`,
+    };
+  }
+
+  // SECURITY: Validate asset is alphanumeric
+  if (!asset.match(/^[A-Z0-9]{1,10}$/)) {
+    return {
+      success: false,
+      output: `❌ Invalid asset symbol. Must be uppercase letters and numbers.`,
+    };
+  }
+
   const startTime = Date.now();
   try {
     const output = await executeKpass(
       userId,
-      ["wallet", "send", "--to", toAddress, "--amount", amount, "--asset", asset, "--output", "json"],
+      ["wallet", "send", "--to", sanitizedAddress, "--amount", parsedAmount.toString(), "--asset", asset.toUpperCase(), "--output", "json"],
       "wallet-send"
     );
 
     logger.info(
-      { userId, toAddress, amount, asset, durationMs: Date.now() - startTime },
+      { userId, toAddress: sanitizedAddress, amount: parsedAmount.toString(), asset, durationMs: Date.now() - startTime },
       "telemetry: wallet transfer initiated"
     );
 
@@ -1640,8 +1756,8 @@ export async function handleWalletSend(
         output:
           `✅ *Transfer Executed*\n` +
           `━━━━━━━━━━━━━━━━\n` +
-          `📍 *To:* \`${toAddress.substring(0, 10)}...${toAddress.substring(toAddress.length - 8)}\`\n` +
-          `💰 *Amount:* \`${amount} ${asset}\`\n` +
+          `📍 *To:* \`${sanitizedAddress.substring(0, 10)}...${sanitizedAddress.substring(sanitizedAddress.length - 8)}\`\n` +
+          `💰 *Amount:* \`${parsedAmount} ${asset}\`\n` +
           `🔗 *TX Link:* ${txDisplay}\n` +
           `⚙️ *Status:* ${statusText}\n`,
       };
@@ -1663,8 +1779,7 @@ export async function handleSendToUsername(
   userId: number,
   username: string,
   amount: string,
-  asset: string,
-  bot: any
+  asset?: string
 ): Promise<CommandResult> {
   if (!isCommandAllowed("wallet-send")) {
     return { success: false, output: "Wallet send is not allowed." };
@@ -1676,7 +1791,8 @@ export async function handleSendToUsername(
   }
 
   const cleanUsername = username.replace(/^@/, "").toLowerCase();
-  if (cleanUsername.toLowerCase() === (await getUsernameForId(userId, bot))?.toLowerCase()) {
+  const selfUsername = await getUsernameForId(userId);
+  if (selfUsername && cleanUsername === selfUsername.toLowerCase()) {
     return { success: false, output: "❌ You cannot send to yourself." };
   }
 
@@ -1723,17 +1839,27 @@ export async function handleSendToUsername(
       };
     }
 
-    if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
+    let parsedAsset = asset?.toUpperCase() || "";
+    let parsedAmount = amount.trim();
+    const amountAssetMatch = amount.trim().match(/^([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z0-9]+)?$/);
+    if (amountAssetMatch) {
+      parsedAmount = amountAssetMatch[1];
+      if (!parsedAsset && amountAssetMatch[2]) {
+        parsedAsset = amountAssetMatch[2].toUpperCase();
+      }
+    }
+
+    if (!parsedAmount || isNaN(parseFloat(parsedAmount)) || parseFloat(parsedAmount) <= 0) {
       return { success: false, output: "❌ Invalid amount. Please enter a positive number." };
     }
 
-    if (!asset || asset.length > 10) {
-      return { success: false, output: "❌ Invalid asset symbol." };
+    if (!parsedAsset || parsedAsset.length > 10) {
+      return { success: false, output: "❌ Invalid asset symbol. Use KITE, USDC, or another supported token." };
     }
 
     const output = await executeKpass(
       userId,
-      ["wallet", "send", "--to", recipientWallet, "--amount", amount, "--asset", asset.toUpperCase(), "--output", "json"],
+      ["wallet", "send", "--to", recipientWallet, "--amount", parsedAmount, "--asset", parsedAsset, "--output", "json"],
       "wallet-send-to-username"
     );
 
@@ -1750,6 +1876,13 @@ export async function handleSendToUsername(
       const txDisplay = txHash 
         ? `[${txHash.substring(0, 10)}...${txHash.substring(txHash.length - 8)}](kitescan.ai{txHash})`
         : "pending...";
+
+      if (!asset) {
+        return {
+          success: false,
+          output: "❌ *Transfer Failed*: Asset type was not specified."
+        };
+      }
 
       return {
         success: true,
@@ -1776,14 +1909,15 @@ export async function handleSendToUsername(
 /**
  * Helper to get username for a Telegram ID (cached in profile)
  */
-async function getUsernameForId(userId: number, bot: any): Promise<string | null> {
+async function getUsernameForId(userId: number): Promise<string | null> {
   try {
     const profile = readUserProfile(userId, config.userDataRoot);
-    return (profile as any).telegramUsername || null;
+    return profile.telegramUsername || null;
   } catch {
     return null;
   }
 }
+
 
 // ════════════════════════════════════════════════════════════════
 // PHASE 2: AUTONOMOUS SCHEDULED AGENTS
@@ -2712,13 +2846,16 @@ export async function handleAutoTopup(userId: number, amountStr: string, frequen
     return { success: false, output: "Auto-topup is not allowed by policy." };
   }
 
-  const amountNGN = parseInt(amountStr, 10);
+  if (!amountStr || !frequency || !providerCode) {
+    return { success: false, output: "❌ Usage: /auto-topup <amount-NGN> <frequency> <provider>" };
+  }
+
+  const amountNGN = parseInt(String(amountStr), 10);
   if (isNaN(amountNGN) || amountNGN <= 0) {
     return { success: false, output: `❌ Invalid amount. Provide a positive number in NGN.` };
   }
 
-  // Basic provider validation
-  const provider = providerCode ? providerCode.toUpperCase() : "";
+  const provider = String(providerCode || "").trim().toUpperCase();
   if (!provider) {
     return { success: false, output: `❌ Provider required (e.g., MTN, GLO, AIRTEL).` };
   }
@@ -2727,13 +2864,19 @@ export async function handleAutoTopup(userId: number, amountStr: string, frequen
     const storage = getAgentStorage();
     const scheduler = getScheduler();
 
-    // Parse schedule
-    const parsed = scheduler.parseScheduleDescription(frequency || "every hour");
+    if (!storage || !scheduler) {
+      return { success: false, output: "❌ Agent storage or scheduler not available." };
+    }
+
+    const parsed = scheduler.parseScheduleDescription(String(frequency || "every hour"));
+    if (!parsed || !parsed.type) {
+      return { success: false, output: "❌ Invalid frequency format. Use 'daily', 'weekly', or 'every <n> hours'." };
+    }
 
     const scheduleType = parsed.type;
-    const schedule = parsed.type === "cron" ? (parsed.cron as string) : `every_${parsed.interval}`;
+    const schedule = parsed.type === "cron" ? String(parsed.cron || "") : `every_${parsed.interval}`;
+    const intervalSecs = parsed.type === "interval" && typeof parsed.interval === "number" ? parsed.interval : undefined;
 
-    // We create an agent that will run the commerce 'data' purchase command
     const agent = storage.createAgent(userId, {
       name: `auto-topup-${provider}-${amountNGN}`,
       goal: `Auto top-up ${amountNGN} NGN ${provider} as recurring ${frequency}`,
@@ -2746,23 +2889,30 @@ export async function handleAutoTopup(userId: number, amountStr: string, frequen
       },
       schedule,
       scheduleType: scheduleType,
-      intervalSeconds: parsed.type === "interval" ? parsed.interval : undefined,
+      intervalSeconds: intervalSecs,
       timezone: "UTC",
       enabled: true,
       maxRetries: 3,
       timeoutSeconds: 60,
-      spendingLimitCents: amountNGN * 100, // approximate
+      spendingLimitCents: amountNGN * 100,
       activeSessionId: undefined,
     });
 
-    // Recalculate next run via scheduler
-    try {
-      (scheduler as any).calculateNextRun(agent.id);
-    } catch {
-      // ignore
+    if (!agent || !agent.id) {
+      return { success: false, output: "❌ Failed to create auto-topup agent." };
     }
 
-    return { success: true, output: `✅ Auto-topup scheduled: ${agent.name} (id: ${agent.id})` };
+    try {
+      if (typeof (scheduler as any).calculateNextRun === "function") {
+        (scheduler as any).calculateNextRun(agent.id);
+      }
+    } catch (calcError) {
+      logger.warn({ userId, error: calcError }, "failed to calculate next run");
+    }
+
+    const agentName = String(agent.name || "unknown").substring(0, 100);
+    const agentId = String(agent.id || "unknown").substring(0, 50);
+    return { success: true, output: `✅ Auto-topup scheduled: ${agentName} (id: ${agentId})` };
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     logger.error({ userId, error: errorMsg }, "auto-topup creation failed");
@@ -2829,5 +2979,173 @@ export async function handleScheduleAirtime(userId: number, amountStr: string, f
     const errorMsg = error instanceof Error ? error.message : String(error);
     logger.error({ userId, error: errorMsg }, "schedule-airtime creation failed");
     return { success: false, output: `❌ Failed to schedule airtime: ${errorMsg}` };
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// PHASE 5: ONBOARDING COMMAND HANDLERS
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * Handle /start - Begin initial onboarding
+ */
+export async function handleOnboardingStart(userId: number): Promise<CommandResult> {
+  try {
+    const response = await handleOnboarding({
+      userId,
+      command: "start",
+    });
+    return {
+      success: response.success,
+      output: response.message,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: errorMsg }, "onboarding start failed");
+    return { success: false, output: `❌ Onboarding error: ${errorMsg}` };
+  }
+}
+
+/**
+ * Handle /tutorial - Enroll in or view tutorial
+ */
+export async function handleOnboardingTutorial(userId: number, tutorialType?: string): Promise<CommandResult> {
+  try {
+    const response = await handleOnboarding({
+      userId,
+      command: "tutorial",
+      args: tutorialType ? [tutorialType] : undefined,
+    });
+    return {
+      success: response.success,
+      output: response.message,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: errorMsg }, "tutorial handler failed");
+    return { success: false, output: `❌ Tutorial error: ${errorMsg}` };
+  }
+}
+
+/**
+ * Handle /setup - Start specific setup flow
+ */
+export async function handleOnboardingSetup(userId: number, flowName?: string): Promise<CommandResult> {
+  try {
+    const response = await handleOnboarding({
+      userId,
+      command: "setup",
+      args: flowName ? [flowName] : undefined,
+    });
+    return {
+      success: response.success,
+      output: response.message,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: errorMsg }, "setup flow handler failed");
+    return { success: false, output: `❌ Setup error: ${errorMsg}` };
+  }
+}
+
+/**
+ * Handle /progress - Show onboarding progress
+ */
+export async function handleOnboardingProgress(userId: number): Promise<CommandResult> {
+  try {
+    const response = await handleOnboarding({
+      userId,
+      command: "progress",
+    });
+    return {
+      success: response.success,
+      output: response.message,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: errorMsg }, "progress handler failed");
+    return { success: false, output: `❌ Progress error: ${errorMsg}` };
+  }
+}
+
+/**
+ * Handle /help - Get context-aware help
+ */
+export async function handleOnboardingHelp(userId: number, topic?: string): Promise<CommandResult> {
+  try {
+    const response = await handleOnboarding({
+      userId,
+      command: "help",
+      args: topic ? [topic] : undefined,
+    });
+    return {
+      success: response.success,
+      output: response.message,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: errorMsg }, "help handler failed");
+    return { success: false, output: `❌ Help error: ${errorMsg}` };
+  }
+}
+
+/**
+ * Handle /next - Advance to next step
+ */
+export async function handleOnboardingNext(userId: number): Promise<CommandResult> {
+  try {
+    const response = await handleOnboarding({
+      userId,
+      command: "next",
+    });
+    return {
+      success: response.success,
+      output: response.message,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: errorMsg }, "next handler failed");
+    return { success: false, output: `❌ Advance error: ${errorMsg}` };
+  }
+}
+
+/**
+ * Handle /skip - Skip current flow
+ */
+export async function handleOnboardingSkip(userId: number): Promise<CommandResult> {
+  try {
+    const response = await handleOnboarding({
+      userId,
+      command: "skip",
+    });
+    return {
+      success: response.success,
+      output: response.message,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: errorMsg }, "skip handler failed");
+    return { success: false, output: `❌ Skip error: ${errorMsg}` };
+  }
+}
+
+/**
+ * Handle /guide - Access detailed guides
+ */
+export async function handleOnboardingGuide(userId: number, topic?: string): Promise<CommandResult> {
+  try {
+    const response = await handleOnboarding({
+      userId,
+      command: "guide",
+      args: topic ? [topic] : undefined,
+    });
+    return {
+      success: response.success,
+      output: response.message,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: errorMsg }, "guide handler failed");
+    return { success: false, output: `❌ Guide error: ${errorMsg}` };
   }
 }

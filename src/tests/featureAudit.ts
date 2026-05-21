@@ -260,7 +260,20 @@ const featureTests = {
         // Simulate test with sample conversation
         const testUserId = 2114747878;
         try {
-          const result = await orchestrateAIExecution(testUserId, "What is my balance?", []);
+          // Create proper execution context matching the function signature
+          const executionContext = {
+            userId: testUserId,
+            userMessage: "What is my balance?",
+            conversationHistory: [],
+            activeSession: undefined,
+            wallet: undefined
+          };
+          
+          const result = await orchestrateAIExecution(
+            executionContext,
+            registry,
+            contextMgr
+          );
           const duration = Date.now() - startTime;
           console.log(`[AUDIT] AI Orchestration: Completed in ${duration}ms`);
           return {

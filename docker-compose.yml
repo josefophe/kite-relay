@@ -32,11 +32,8 @@ services:
       
       # Runtime paths (SHARED with worker)
       - USER_DATA_ROOT=/data
-      # - KPASS_BINARY=/usr/local/bin/kpass
-      # - KSEARCH_BINARY=/usr/local/bin/ksearch
-
-      - KPASS_BINARY=kpass
-      - KSEARCH_BINARY=ksearch
+      - KPASS_BINARY=/usr/local/bin/kpass
+      - KSEARCH_BINARY=/usr/local/bin/ksearch
       
       # Network
       - PORT=3000
@@ -67,8 +64,9 @@ services:
       - /usr/src/app/dist
       # CRITICAL: Shared data directory (relay + worker read/write)
       - ./data:/data
-      # OPTIONAL: If you have kpass installed locally:
-      # - /usr/local/bin/kpass:/usr/local/bin/kpass:ro
+      # Mount kpass and ksearch binaries from .kpass_bin/ (absolute paths for Docker)
+      - /root/kite/kite-4/.kpass_bin/kpass:/usr/local/bin/kpass:ro
+      - /root/kite/kite-4/.kpass_bin/ksearch:/usr/local/bin/ksearch:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -104,8 +102,8 @@ services:
       - HOST=0.0.0.0
       
       # 4. Correct Binary Paths verified from the install script
-      - KPASS_BINARY=/root/.local/bin/kpass
-      - KSEARCH_BINARY=/root/.local/bin/ksearch
+      - KPASS_BINARY=/usr/local/bin/kpass
+      - KSEARCH_BINARY=/usr/local/bin/ksearch
       
       - USER_DATA_ROOT=/data
       
@@ -128,6 +126,9 @@ services:
     volumes:
       # ONLY mount the persistent data folder, let Docker handle the application code internally
       - ./data:/data
+      # Mount kpass and ksearch binaries from .kpass_bin/ (absolute paths for Docker)
+      - /root/kite/kite-4/.kpass_bin/kpass:/usr/local/bin/kpass:ro
+      - /root/kite/kite-4/.kpass_bin/ksearch:/usr/local/bin/ksearch:ro
     depends_on:
       redis:
         condition: service_healthy

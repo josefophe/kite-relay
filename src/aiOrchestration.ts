@@ -2,13 +2,35 @@ import { generateText, tool } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { groq } from "@ai-sdk/groq";
-import { LanguageModel} from "ai";
+import { LanguageModel } from "ai";
 import { config } from "./config";
 import { logger } from "./logger";
 import { ToolRegistry } from "./toolRegistry";
 import { ConversationContextManager } from "./conversationContext";
 import { CommandResult } from "./commandGateway";
-import { z } from 'zod';
+import { z } from "zod";
+
+// ════════════════════════════════════════════════════════════════
+// PHASE 3 IMPORTS: Skills Layer Integration
+// ════════════════════════════════════════════════════════════════
+import { getToolRegistry } from "./toolRegistry-skill-integrated";
+import { resolveIntent, validateIntent } from "./intentResolver";
+import { routeIntentToTool } from "./skillRouter";
+import { validateEconomicAction } from "./economicSafety";
+
+// ════════════════════════════════════════════════════════════════
+// PHASE 5: DEFENSIVE TOOL SAFETY UTILITIES
+// ════════════════════════════════════════════════════════════════
+import {
+  getToolSafely,
+  getSafetyConfigSafely,
+  validateToolRegistry
+} from "./toolSafetyUtils";
+import {
+  formatTelegramResponse,
+  formatErrorResponse,
+  formatTransactionResponse,
+} from "./telegramFormatter";
 
 /**
  * PHASE 3: AI Orchestration Layer
@@ -75,7 +97,24 @@ Your role:
 - Select appropriate tools to achieve goals
 - Execute economic actions (transfers, searches, sessions)
 - Operate within spending constraints
-- Provide clear explanations of actions
+- Provide clear, user-friendly answers in Telegram format
+
+You are using Groq for intent parsing and tool orchestration.
+
+Available tools include:
+- walletBalance: check wallet balances
+- walletSend: send funds to a wallet address
+- sendToUsername: send funds to a Telegram user
+- ksearch: discover AI services
+- ksearchServices: search service listings
+- ksearchServiceDetails: inspect a service
+- agentRegister: register a new commerce agent
+- agentCreate: create a scheduled autonomous agent
+- sessionCreate: create an approved spending session
+- sessionList: list sessions
+- sessionStatus: check session approval
+- sessionUse: activate a spending session
+- sessionExecute: execute paid API calls through an active session
 
 ## Current Context
 
@@ -105,7 +144,7 @@ CRITICAL - You MUST NEVER:
 
 When selecting tools:
 1. Assess the user's intent carefully
-2. Check if it requires authentication (most do)
+2. Check if it requires authentication
 3. Verify active session for economic actions (transfers, executions)
 4. Use walletBalance before transfers to verify funds
 5. Chain tools logically (search → analyze → decide → execute)
@@ -116,9 +155,19 @@ When selecting tools:
 After executing tools:
 - Be concise and transactional
 - Explain each action taken
-- Provide tx hashes and explorer links for blockchain actions
+- Provide tx hashes and explorer links for payments
 - Summarize outcomes with status emoji (✅/❌/⚠️)
-- Offer next steps if applicable
+- Offer next steps and recovery guidance
+
+## Example User Requests
+
+- "Send @charity 5 USDC"
+- "Transfer 2 KITE to @john"
+- "Check my wallet"
+- "Find verified aid organizations"
+- "Register an autonomous trading agent"
+- "Pay for API service"
+- "Search service ID"
 
 ## Economic Action Guidelines
 
@@ -142,6 +191,121 @@ For searches:
 Now, handle this request thoughtfully and safely.`;
 
   return prompt;
+}
+
+/**
+ * PHASE 3: Fast-Path Intent Resolution
+ * 
+ * Detects high-confidence intents and routes directly to tools
+ * without LLM overhead. Falls back to LLM for ambiguous cases.
+ */
+async function tryFastPathExecution(
+  context: AIExecutionContext,
+  userId: number
+): Promise<{ success: boolean; result?: AIExecutionResult }> {
+  try {
+    // 1. Resolve intent from user message
+    const intent = resolveIntent(context.userMessage);
+
+    // 2. Check confidence - only use fast path if high confidence
+    if (intent.confidence < 0.7) {
+      logger.debug({ userId, confidence: intent.confidence }, "Intent confidence too low, using LLM");
+      return { success: false };
+    }
+
+    // 3. Validate intent has required entities
+    const validation = validateIntent(intent);
+    if (!validation.valid) {
+      logger.debug({ userId, intent: intent.action, error: validation.error }, "Intent validation failed");
+      return { success: false };
+    }
+
+    // 4. Check if economic action requires safety validation
+    // Use a type that allows for an optional error string
+    let safetyValidation: { valid: boolean; error?: string } = { valid: true };
+
+    if (intent.action === "walletSend" || intent.action === "x402Execute" || intent.action === "requestSession") {
+      try {
+        // Map intent.action strings to match acceptable validator type definitions
+        let actionType: "transfer" | "x402_execute" | "buy_airtime" | "buy_data";
+        
+        if (intent.action === "walletSend") actionType = "transfer";
+        else if (intent.action === "x402Execute") actionType = "x402_execute";
+        else actionType = "transfer"; // Provide an appropriate default mapping for requestSession
+
+        // Await the function with the correctly mapped action type string
+        safetyValidation = await validateEconomicAction({ 
+          userId, 
+          actionType, 
+          amount: intent.entities.amount ? parseFloat(String(intent.entities.amount)) : 0, 
+          currency: String(intent.entities.asset || "USDC"), 
+        });
+
+        if (!safetyValidation.valid) {
+          logger.info({ userId, action: intent.action, error: safetyValidation.error }, "Economic action blocked by safety");
+          return {
+            success: true,
+            result: {
+              success: false,
+              output: `⚠️ Action blocked: ${safetyValidation.error || "Unknown safety reason"}`,
+              reasoning: "Safety validation failed",
+              toolsExecuted: [],
+              totalDuration: 0,
+              economicActionsPerformed: 0,
+            },
+          };
+        }
+      } catch (error) {
+        logger.error({ userId, error }, "Safety validation error");
+        return { success: false }; // Fall back to LLM
+      }
+    }
+
+
+    // 5. Route intent to tool
+    logger.info(
+      { userId, intent: intent.action, confidence: intent.confidence },
+      "Fast-path: routing intent to tool"
+    );
+
+    const { result: toolResult } = await routeIntentToTool(userId, intent);
+
+    if (!toolResult) {
+      logger.warn({ userId, intent: intent.action }, "No result from tool routing");
+      return { success: false }; // Fall back to LLM
+    }
+
+    // 6. Format response with Telegram formatter
+    const formatted = formatTelegramResponse(toolResult.output || "", {
+      userId,
+      action: intent.action,
+      success: toolResult.success || false,
+    });
+
+    // 7. Return as AIExecutionResult
+    return {
+      success: true,
+      result: {
+        success: toolResult.success || false,
+        output: formatted.text || toolResult.output,
+        reasoning: `Fast-path execution of ${intent.description}`,
+        toolsExecuted: [
+          {
+            name: intent.action,
+            args: intent.entities,
+            result: toolResult,
+            duration: 0,
+          },
+        ],
+        totalDuration: 0,
+        economicActionsPerformed: intent.action === "walletSend" || intent.action === "x402Execute" ? 1 : 0,
+      },
+    };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: msg }, "Fast-path execution error");
+    return { success: false };
+  }
 }
 
 /**
@@ -194,9 +358,21 @@ function createToolDefinitions(
       continue;
     }
 
-    // DEFENSIVE: Type guard on toolSpec.typeName (avoid "Cannot read properties of undefined")
-    if (toolSpec.typeName === undefined) {
-      logger.debug({ userId, toolName }, "Tool missing typeName - may be unregistered agent");
+    // CRITICAL: Validate typeName exists and matches name (PREVENTS "Cannot read properties of undefined" errors)
+    if (!toolSpec.typeName || typeof toolSpec.typeName !== "string") {
+      logger.error(
+        { userId, toolName, hasTypeName: !!toolSpec.typeName },
+        "[TOOL_SAFETY] CRITICAL: Tool missing valid typeName - skipping to prevent undefined access errors"
+      );
+      continue;
+    }
+
+    if (toolSpec.name !== toolSpec.typeName) {
+      logger.error(
+        { userId, toolName, typeName: toolSpec.typeName },
+        "[TOOL_SAFETY] CRITICAL: Tool name/typeName mismatch - skipping to prevent orchestration failures"
+      );
+      continue;
     }
 
     const properties: Record<string, any> = {};
@@ -362,6 +538,32 @@ export async function orchestrateAIExecution(
       throw new Error("Invalid user ID in context");
     }
 
+    // ════════════════════════════════════════════════════════════════
+    // PHASE 3: Try Fast-Path Intent Resolution First
+    // ════════════════════════════════════════════════════════════════
+    // For high-confidence intents, execute directly without LLM overhead
+    // Falls back to full LLM orchestration if fast-path fails
+    try {
+      const fastPathResult = await tryFastPathExecution(context, context.userId);
+      if (fastPathResult.success && fastPathResult.result) {
+        const totalDuration = Date.now() - startTime;
+        logger.info(
+          { userId: context.userId, duration: totalDuration },
+          "Fast-path execution completed successfully"
+        );
+        return {
+          ...fastPathResult.result,
+          totalDuration,
+        };
+      }
+    } catch (error) {
+      logger.debug(
+        { userId: context.userId, error },
+        "Fast-path failed, falling back to LLM"
+      );
+      // Continue to LLM orchestration below
+    }
+
     // DEFENSIVE: Validate tool registry
     if (!toolRegistry) {
       logger.warn({ userId: context.userId }, "Tool registry is null");
@@ -378,7 +580,30 @@ export async function orchestrateAIExecution(
       };
     }
 
-    // DEFENSIVE: Check if user has any registered agents
+    // DEFENSIVE: Validate tool registry health with safe utility
+    const registryValidation = validateToolRegistry(toolRegistry, context.userId);
+    if (!registryValidation.valid || registryValidation.validTools === 0) {
+      logger.error(
+        { userId: context.userId, validation: registryValidation },
+        "Tool registry validation failed - tools may be undefined"
+      );
+      return {
+        success: false,
+        output:
+          `❌ Tool registry is corrupted.\n\n` +
+          `Valid tools: ${registryValidation.validTools}/${registryValidation.totalTools}\n` +
+          `Invalid: ${registryValidation.invalidTools.slice(0, 3).join(", ")}${registryValidation.invalidTools.length > 3 ? "..." : ""}\n\n` +
+          `Please try:\n` +
+          `1. /agent-register\n` +
+          `2. /debug-runtime (for more info)`,
+        reasoning: "Tool registry validation failed",
+        toolsExecuted: [],
+        totalDuration: Date.now() - startTime,
+        economicActionsPerformed: 0
+      };
+    }
+
+    // DEFENSIVE: Check if user has any registered agents (safe lookup)
     try {
       const tools = toolRegistry.getAll();
       if (!tools || tools.length === 0) {
@@ -479,9 +704,11 @@ export async function orchestrateAIExecution(
     if (response.toolCalls && Array.isArray(response.toolCalls)) {
       economicActionsPerformed = response.toolCalls.filter((tc: any) => {
         try {
-          const safetyConfig = toolRegistry.getSafetyConfig(tc.toolName);
-          return safetyConfig?.economicAction === true;
-        } catch {
+          // PHASE 5: Use safe lookup to prevent undefined access errors
+          const safetyConfig = getSafetyConfigSafely(toolRegistry, tc.toolName, context.userId);
+          return safetyConfig.exists && safetyConfig.economicAction === true;
+        } catch (error) {
+          logger.debug({ userId: context.userId, toolName: tc.toolName, error }, "Safety config lookup failed");
           return false;
         }
       }).length;
@@ -582,4 +809,8 @@ export function formatExecutionResult(result: AIExecutionResult): string {
   }
 
   return output;
+}
+
+function setTimeout(arg0: () => void, timeout: any): void {
+  throw new Error("Function not implemented.");
 }
