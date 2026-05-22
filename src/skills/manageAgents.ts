@@ -1,11 +1,12 @@
 /**
- * SKILL WRAPPER: Manage Agents
+ * SKILL WRAPPER: Manage Agents (READ-ONLY)
  * 
- * Wraps kpass agent commands with:
- * - Agent registration
- * - Agent listing
- * - Agent type validation
- * - Output formatting
+ * Wraps kpass user management commands with:
+ * - Agent listing (kpass user agents)
+ * - Session listing (kpass user sessions)
+ * - User verification (kpass me)
+ * 
+ * NOTE: This skill is READ-ONLY. Agent registration is handled by request-session skill.
  */
 import { executeKpass } from "../userRuntime";
 import { logger } from "../logger";
@@ -13,25 +14,28 @@ import { SkillExecutionOutput, KiteExitCode } from "./skillTypes";
 
 export interface ManageAgentsInput {
   userId: number;
-  action: "register" | "list";
-  agentType?: string; // trader, farmer, collector, etc.
+  action: "list-agents" | "list-sessions" | "check-user";
+  statusFilter?: "active" | "expired"; // Only for list-sessions
 }
 
 /**
- * Register and manage autonomous agents
+ * List and inspect agents and sessions (READ-ONLY)
  * 
  * Actions:
- * - register: Register new agent type
- * - list: List user's registered agents
+ * - list-agents: List user's registered agents
+ * - list-sessions: List user's spending sessions
+ * - check-user: Verify current authentication
  */
 export async function manageAgentsSkill(input: ManageAgentsInput): Promise<SkillExecutionOutput> {
   const startTime = Date.now();
   try {
     switch (input.action) {
-      case "register":
-        return await handleRegister(input.userId, input.agentType);
-      case "list":
-        return await handleList(input.userId);
+      case "list-agents":
+        return await handleListAgents(input.userId);
+      case "list-sessions":
+        return await handleListSessions(input.userId, input.statusFilter);
+      case "check-user":
+        return await handleCheckUser(input.userId);
       default:
         return {
           success: false,
@@ -52,57 +56,30 @@ export async function manageAgentsSkill(input: ManageAgentsInput): Promise<Skill
     );
     return {
       success: false,
-      output: `❌ Agent management error: ${errorMsg}`,
+      output: `❌ Management error: ${errorMsg}`,
       error: errorMsg,
       duration: Date.now() - startTime,
     };
   }
 }
 
-async function handleRegister(userId: number, agentType?: string): Promise<SkillExecutionOutput> {
+async function handleCheckUser(userId: number): Promise<SkillExecutionOutput> {
   const startTime = Date.now();
-  if (!agentType || agentType.trim().length === 0) {
-    return {
-      success: false,
-      output: "❌ Please specify agent type (e.g., trader, farmer, collector)",
-      exitCode: KiteExitCode.USAGE_ERROR,
-    };
-  }
-
-  const type = agentType.toLowerCase().trim();
-  
-  // Validate agent type
-  const validTypes = ["trader", "farmer", "collector", "monitor", "autonomous"];
-  if (!validTypes.includes(type)) {
-    return {
-      success: false,
-      output: `❌ Unknown agent type: ${type}\nValid types: ${validTypes.join(", ")}`,
-      exitCode: KiteExitCode.USAGE_ERROR,
-    };
-  }
-
   try {
     const output = await executeKpass(
       userId,
-      ["agent:register", "--type", type, "--output", "json"],
-      "agent-register"
+      ["me", "--output", "json"],
+      "user-check"
     );
 
     let responseData: Record<string, unknown> = {};
-    let agentId = "";
     try {
       responseData = JSON.parse(output);
-      agentId = (responseData.agentId || responseData.agent_id || "") as string;
     } catch {
       // Continue even if parse fails
     }
 
-    // Wrapped inside a clear Markdown container layout block
-    let message = `*✅ Agent Registered*\n`;
-    message += `\`\`\`\n`;
-    message += `Type:     ${type}\n`;
-    message += `Agent ID: ${agentId || "N/A"}\n`;
-    message += `\`\`\``;
+    const message = `*✅ User Verified*\n\`\`\`\nUser ID: ${(responseData.user_id || "N/A")}\nEmail: ${(responseData.email || "N/A")}\n\`\`\``;
 
     return {
       success: true,
@@ -119,23 +96,16 @@ async function handleRegister(userId: number, agentType?: string): Promise<Skill
         exitCode: KiteExitCode.AUTH_ERROR,
       };
     }
-    if (errorMsg.includes("code 4")) {
-      return {
-        success: false,
-        output: `❌ Agent type not supported: ${type}`,
-        exitCode: KiteExitCode.NOT_FOUND,
-      };
-    }
     return {
       success: false,
-      output: `❌ Agent registration failed: ${errorMsg}`,
+      output: `❌ User check failed: ${errorMsg}`,
       error: errorMsg,
       exitCode: KiteExitCode.NETWORK_ERROR,
     };
   }
 }
 
-async function handleList(userId: number): Promise<SkillExecutionOutput> {
+async function handleListAgents(userId: number): Promise<SkillExecutionOutput> {
   const startTime = Date.now();
   try {
     const output = await executeKpass(
@@ -192,6 +162,70 @@ async function handleList(userId: number): Promise<SkillExecutionOutput> {
     return {
       success: false,
       output: `❌ Failed to list agents: ${errorMsg.replace(/[._\-!]/g, '\\$&')}`,
+      error: errorMsg,
+      exitCode: KiteExitCode.NETWORK_ERROR,
+    };
+  }
+}
+
+async function handleListSessions(userId: number, statusFilter?: "active" | "expired"): Promise<SkillExecutionOutput> {
+  const startTime = Date.now();
+  try {
+    const args = ["user", "sessions", "--output", "json"];
+    if (statusFilter) {
+      args.push("--status", statusFilter);
+    }
+
+    const output = await executeKpass(userId, args, "sessions-list");
+
+    let responseData: Record<string, unknown> = {};
+    let sessions: any[] = [];
+    try {
+      responseData = JSON.parse(output);
+      sessions = (responseData.sessions || []) as any[];
+    } catch {
+      // Continue even if parse fails
+    }
+
+    let message = `*📋 Your Spending Sessions*\n\n`;
+
+    if (sessions.length > 0) {
+      message += `\`\`\``;
+      sessions.forEach((session: any, idx: number) => {
+        const num = idx + 1;
+        const status = session.status || "unknown";
+        const agentType = session.agent_type || "N/A";
+        const id = session.id || "N/A";
+        const spent = session.usage?.spent_total || "0.00";
+        const budget = session.delegation?.payment_policy?.max_total_amount || "unlimited";
+
+        message += `\n[${num}] ${agentType.toUpperCase()} (${status})\n`;
+        message += `    ID:     ${id}\n`;
+        message += `    Spent:  ${spent} / ${budget}\n`;
+      });
+      message += `\`\`\``;
+    } else {
+      message = "ℹ️ No sessions found\. Use `request-session` to create one\.";
+    }
+
+    return {
+      success: true,
+      output: message,
+      rawData: responseData,
+      duration: Date.now() - startTime,
+    };
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    if (errorMsg.includes("code 3")) {
+      return {
+        success: false,
+        output: "❌ Not authenticated\. Please run \`/login\` first\.",
+        exitCode: KiteExitCode.AUTH_ERROR,
+      };
+    }
+    return {
+      success: false,
+      output: `❌ Failed to list sessions: ${errorMsg.replace(/[._\-!]/g, '\\$&')}`,
       error: errorMsg,
       exitCode: KiteExitCode.NETWORK_ERROR,
     };

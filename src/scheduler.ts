@@ -269,7 +269,7 @@ export class AgentScheduler {
       return { command: "kpass", args: ["wallet", "balance"] };
     }
     if (desc.includes("transfer") || desc.includes("send")) {
-      return { command: "kpass", args: ["wallet", "transfer"] };
+      return { command: "kpass", args: ["wallet", "send"] };
     }
     if (desc.includes("search") || desc.includes("find")) {
       const terms = desc.replace(/search|find/gi, "").trim();

@@ -121,30 +121,30 @@ async function handleStart(userId: number): Promise<OnboardingResponse> {
   const response = {
     success: true,
     message: `
-*🎉 Welcome to KiteRelay!*
+<b>🎉 Welcome to KiteRelay!</b>
 
 I'll guide you through setting up your account and learning the platform. Let's start with the basics:
 
-*Quick Path (5-10 minutes):*
+<b>Quick Path (5-10 minutes):</b>
 1️⃣ Authentication - Sign up or log in
 2️⃣ Wallet - Check your balance
 3️⃣ First Transfer - Send your first tokens
 
-*Available Flows:*
-🔐 \`/setup auth\` - Authentication flow
-👤 \`/setup profile\` - Profile & wallet basics
-📤 \`/setup transfer\` - First transfer walkthrough
-🤖 \`/setup agents\` - Agent registration
-💳 \`/setup session\` - Session creation
-🔍 \`/setup api\` - Paid API discovery
+<b>Available Flows:</b>
+🔐 <code>/setup auth</code> - Authentication flow
+👤 <code>/setup profile</code> - Profile &amp; wallet basics
+📤 <code>/setup transfer</code> - First transfer walkthrough
+🤖 <code>/setup agents</code> - Agent registration
+💳 <code>/setup session</code> - Session creation
+🔍 <code>/setup api</code> - Paid API discovery
 
-*Learning:*
-📚 \`/tutorial full\` - Complete walkthrough (60 min)
-📚 \`/tutorial transfers\` - Transfers only (10 min)
+<b>Learning:</b>
+📚 <code>/tutorial full</code> - Complete walkthrough (60 min)
+📚 <code>/tutorial transfers</code> - Transfers only (10 min)
 
-*Help:*
-❓ \`/help\` - Command reference
-📍 \`/progress\` - Your progress
+<b>Help:</b>
+❓ <code>/help</code> - Command reference
+📍 <code>/progress</code> - Your progress
     `,
     nextSteps: [
       'Start with /setup auth to authenticate',
@@ -231,28 +231,28 @@ async function handleSetup(userId: number, flowName?: string): Promise<Onboardin
     return {
       success: true,
       message: `
-*📋 Available Setup Flows*
+<b>📋 Available Setup Flows</b>
 
-\`/setup auth\` - Authentication (3 steps, 5 min)
+<code>/setup auth</code> - Authentication (3 steps, 5 min)
   Sign up or log in to Kite Passport
 
-\`/setup profile\` - Profile & Wallet (3 steps, 5 min)
+<code>/setup profile</code> - Profile &amp; Wallet (3 steps, 5 min)
   Check your account and balance
 
-\`/setup transfer\` - First Transfer (3 steps, 10 min)
+<code>/setup transfer</code> - First Transfer (3 steps, 10 min)
   Learn to send your first tokens safely
 
-\`/setup agents\` - Agents (3 steps, 8 min)
+<code>/setup agents</code> - Agents (3 steps, 8 min)
   Register and manage autonomous agents
 
-\`/setup session\` - Sessions (4 steps, 10 min)
+<code>/setup session</code> - Sessions (4 steps, 10 min)
   Create spending authorization sessions
 
-\`/setup api\` - Paid APIs (3 steps, 10 min)
+<code>/setup api</code> - Paid APIs (3 steps, 10 min)
   Discover and use paid services
       `,
       action: 'Show setup flows',
-      nextSteps: ['Choose a flow with /setup <flow>'],
+      nextSteps: ['Choose a flow with /setup &lt;flow&gt;'],
     };
   }
 
@@ -307,13 +307,13 @@ async function handleProgress(userId: number): Promise<OnboardingResponse> {
     return {
       success: true,
       message: `
-*👋 Welcome!*
+<b>👋 Welcome!</b>
 
 You haven't started onboarding yet.
 
-Use \`/start\` to begin or choose:
-• \`/setup auth\` - Start authentication
-• \`/tutorial full\` - Complete walkthrough
+Use <code>/start</code> to begin or choose:
+• <code>/setup auth</code> - Start authentication
+• <code>/tutorial full</code> - Complete walkthrough
       `,
       nextSteps: ['Use /start to begin'],
     };
@@ -334,98 +334,628 @@ Use \`/start\` to begin or choose:
  * /help - Show help for onboarding
  */
 async function handleHelp(userId: number, topic?: string): Promise<OnboardingResponse> {
-  if (topic === 'commands') {
+  // ========== COMPREHENSIVE HELP SYSTEM ==========
+  
+  if (topic === 'commands' || topic === 'all') {
     return {
       success: true,
       message: `
-*🎓 Onboarding Commands*
+<b>📚 ALL AVAILABLE COMMANDS</b>
 
-*Getting Started:*
-/start - Initialize onboarding
-/progress - Check your progress
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>AUTHENTICATION</b>
+/login &lt;email&gt; - Sign in
+/signup &lt;email&gt; - Create new account
+/logout - Sign out
+/me - View your profile &amp; status
 
-*Setup Flows (10 min each):*
-/setup auth - Authentication
-/setup profile - Wallet & profile
-/setup transfer - First transfer
-/setup agents - Agent registration
-/setup session - Session creation
-/setup api - Paid API discovery
+<b>WALLET &amp; MONEY</b>
+/balance - Check your balance
+/send &lt;user/address&gt; &lt;amount&gt; &lt;asset&gt; - Send tokens
+/activity - View transaction history
+/faucet - Get test tokens (testnet only)
 
-*Tutorials (5-60 min):*
-/tutorial - List tutorials
-/tutorial full - 60-min complete walkthrough
-/tutorial transfers - Making transfers
-/tutorial agents - Using agents
+<b>AGENTS</b>
+/agent-register &lt;type&gt; - Register new agent
+/agent-list - See all your agents
+/agent-create "&lt;description&gt;" - Create scheduled agent
+/agent-start &lt;id&gt; - Start/resume agent
+/agent-stop &lt;id&gt; - Pause agent
+/agent-delete &lt;id&gt; - Delete agent
+/agent-logs &lt;id&gt; - View agent logs
+/agent-run &lt;id&gt; "&lt;command&gt;" - Manually trigger agent
 
-*During a Flow:*
-/next - Complete step and advance
-/skip - Skip current flow
-/progress - Check progress
+<b>SPENDING SESSIONS</b>
+/session-create &lt;options&gt; - Request spending authorization
+/session-list - View all sessions
+/session-status &lt;id&gt; - Check session details
+/session-revoke &lt;id&gt; - Cancel session
 
-*General Help:*
-/help - This message
-/help <topic> - Help on topic
+<b>DISCOVERY &amp; SERVICES</b>
+/discover - Browse all services
+/discover search &lt;keyword&gt; - Find services
+/discover details &lt;id&gt; - Service details
+
+<b>SHOPPING</b>
+/shop search &lt;keyword&gt; - Find products
+/shop add &lt;product-id&gt; - Add to cart
+/shop cart - View cart
+/shop checkout - Complete purchase
+
+<b>LEARNING</b>
+/start - Begin onboarding
+/setup &lt;flow&gt; - Start setup flow
+/tutorial &lt;type&gt; - Enroll in tutorial
+/progress - Check learning progress
+
+<b>HELP</b>
+/help - General help (this list)
+/help &lt;topic&gt; - Help on specific topic
+/guide &lt;action&gt; - Quick guides
+
+<b>SYSTEM</b>
+/status - Bot &amp; system status
+/debug health - Run health check
+/version - Bot version
       `,
     };
   }
 
-  if (topic === 'first-transfer') {
+  if (topic === 'transfers' || topic === 'send' || topic === 'first-transfer') {
     return {
       success: true,
       message: `
-*💰 Making Your First Transfer*
+<b>💰 MAKING TRANSFERS</b>
 
-*1. Get recipient address:*
-   Ask for their 0x address (42 chars)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>BASIC TRANSFER</b>
 
-*2. Check your balance:*
-   \`kpass wallet balance\`
+1️⃣ Check balance:
+   /balance
 
-*3. Send tokens:*
-   \`kpass wallet send --to 0x... --amount 10 --asset USDC\`
+2️⃣ Get recipient:
+   @username or 0x... address
 
-*4. Verify:*
-   \`/activity\` to see transaction
+3️⃣ Send tokens:
+   /send @john 5 USDC
+   /send 0x1234...5678 10 USDC
 
-*Tips:*
-✓ Double-check address before sending
-✓ Transfers are permanent
-✓ Use small amount for first test
-✓ Transaction shows in activity immediately
+4️⃣ Verify:
+   /activity
+
+<b>IMPORTANT:</b>
+⚠️ Transfers are PERMANENT - cannot be reversed
+⚠️ Always verify address before confirming
+⚠️ Test with small amount first
+✓ Transfers usually complete in 1-5 seconds
+✓ You see confirmation with tx hash
+
+<b>VALID FORMATS:</b>
+✅ /send @username 5 USDC
+✅ /send 0x1234567890123456789012345678901234567890 5 USDC
+❌ /send 1234567890123456789012345678901234567890 (missing 0x)
+❌ /send john@email.com 5 USDC (use @username or wallet)
+
+<b>TROUBLESHOOTING:</b>
+❌ "Insufficient balance" → Add more funds
+❌ "Invalid recipient" → Check address format
+❌ "Session expired" → Run /login again
+
+<b>LEARN MORE:</b>
+See USER_GUIDE.md → "Sending Your First Transfer"
+Or use: /guide transfer
       `,
     };
   }
 
+  if (topic === 'agents') {
+    return {
+      success: true,
+      message: `
+<b>🤖 UNDERSTANDING AGENTS</b>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>WHAT'S AN AGENT?</b>
+An autonomous bot that executes tasks on your behalf.
+Once created, it runs 24/7 without manual action.
+
+<b>AGENT TYPES:</b>
+• trader - Make transfers and payments
+• collector - Gather data from services
+• farmer - Perform farming operations
+• custom - Your own custom logic
+
+<b>QUICK START:</b>
+
+1️⃣ Register agent:
+   /agent-register trader
+
+2️⃣ Create spending session:
+   /session-create --agent &lt;agent-id&gt; --max 100
+
+3️⃣ Approve on phone (via passkey)
+
+4️⃣ Agent is ready!
+
+<b>NATURAL LANGUAGE AGENTS:</b>
+
+Create agents by describing what you want:
+   /agent-create "send 5 USDC daily at 9am"
+   /agent-create "check balance every hour"
+   /agent-create "buy KITE if price drops below $10"
+
+<b>MANAGING AGENTS:</b>
+
+See all agents:
+   /agent-list
+
+View agent logs:
+   /agent-logs &lt;agent-id&gt;
+
+Stop agent:
+   /agent-stop &lt;agent-id&gt;
+
+Restart agent:
+   /agent-start &lt;agent-id&gt;
+
+Delete agent:
+   /agent-delete &lt;agent-id&gt;
+
+<b>SAFETY:</b>
+✓ Each agent needs spending session approval
+✓ Session has max per-transaction limit
+✓ Session can be revoked anytime
+✓ All actions logged in /agent-logs
+✓ Start small, increase limits gradually
+
+<b>LEARN MORE:</b>
+See USER_GUIDE.md → "Creating Your First Agent"
+Or use: /guide agent
+      `,
+    };
+  }
+
+  if (topic === 'sessions' || topic === 'spending') {
+    return {
+      success: true,
+      message: `
+<b>💳 SPENDING SESSIONS</b>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>WHAT'S A SESSION?</b>
+Authorization for agents to spend your money within limits.
+Think of it like giving an agent a credit card with rules.
+
+<b>WHY NEEDED:</b>
+For safety - agents can only spend what you approve.
+
+<b>CREATING A SESSION:</b>
+
+   /session-create --agent trader --max 100 --ttl 24h
+
+Parameters:
+   --agent &lt;id&gt; - Which agent can use this
+   --max &lt;amount&gt; - Highest per-transaction amount
+   --ttl &lt;time&gt; - How long session lasts (1h, 24h, 7d)
+
+Example:
+   /session-create --agent trader-001 --max 50 --ttl 7d
+   → Agent can spend up to $50 per transaction for 7 days
+
+<b>APPROVAL:</b>
+✓ Session created (pending)
+✓ Get notification on phone
+✓ Use passkey to approve
+✓ Session becomes active
+
+<b>MANAGING SESSIONS:</b>
+
+View all:
+   /session-list
+
+Check specific:
+   /session-status &lt;session-id&gt;
+
+Revoke (stop agent spending):
+   /session-revoke &lt;session-id&gt;
+
+<b>SESSION EXPIRATION:</b>
+Sessions have TTL (time-to-live):
+   1h → Expires after 1 hour
+   24h → Expires after 1 day
+   7d → Expires after 1 week
+   30d → Expires after 1 month
+
+After expiration:
+   → Agent can no longer spend
+   → Create new session to resume
+
+<b>BEST PRACTICES:</b>
+✓ Different session per agent
+✓ Set spending limits gradually
+✓ Use shorter TTL for testing (1h)
+✓ Use longer TTL for trusted agents (7d+)
+✓ Revoke unused sessions
+✓ Review /session-list regularly
+
+<b>LEARN MORE:</b>
+See USER_GUIDE.md → "Managing Spending Sessions"
+Or use: /guide session
+      `,
+    };
+  }
+
+  if (topic === 'discover' || topic === 'services' || topic === 'apis') {
+    return {
+      success: true,
+      message: `
+<b>🔍 DISCOVERING PAID SERVICES</b>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>WHAT'S AVAILABLE:</b>
+Hundreds of paid APIs for:
+   🎨 Image generation (DALL-E, Midjourney, etc.)
+   🎤 Voice &amp; audio (TTS, voice recognition, music)
+   📊 Data (weather, news, prices, geocoding)
+   🧠 AI compute (LLM, translation, transcription)
+   🛍️ Shopping (Amazon, price comparison)
+   📱 Communication (Email, SMS, notifications)
+
+<b>BROWSE SERVICES:</b>
+
+See all:
+   /discover
+
+Search by keyword:
+   /discover search weather
+   /discover search "image generation"
+
+Get details:
+   /discover details service-id
+
+<b>USING SERVICES:</b>
+
+1️⃣ Find service:
+   /discover search "service-name"
+
+2️⃣ Create session:
+   /session-create --max 5 --ttl 1h
+
+3️⃣ Approve on phone
+
+4️⃣ Use the service!
+
+<b>PRICING:</b>
+Most services cost $0.01 - $1.00 per call.
+You pay only for what you use.
+No subscriptions, no recurring charges.
+
+<b>EXAMPLES:</b>
+
+Generate image:
+   /discover search "image"
+   → Find DALL-E, Midjourney, etc.
+   → Create session
+   → Use it!
+
+Check weather:
+   /discover search "weather"
+   → Find weather APIs
+   → Create session
+   → Agent can check weather
+
+Translate text:
+   /discover search "translation"
+   → Find translation services
+   → Create session
+   → Translate documents
+
+<b>LEARN MORE:</b>
+See USER_GUIDE.md → "Using Paid Services"
+Or use: /guide service
+      `,
+    };
+  }
+
+  if (topic === 'shopping' || topic === 'shop' || topic === 'purchase') {
+    return {
+      success: true,
+      message: `
+<b>🛒 SHOPPING WITH CRYPTO</b>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>HOW IT WORKS:</b>
+Browse products → Add to cart → Pay with USDC/KITE
+
+<b>SEARCH PRODUCTS:</b>
+
+   /shop search "laptop"
+   /shop search "programming books"
+
+<b>ADD TO CART:</b>
+
+   /shop add product-id
+
+<b>VIEW CART:</b>
+
+   /shop cart
+
+<b>CHECKOUT:</b>
+
+   /shop checkout --asset USDC
+   (or use --asset KITE)
+
+<b>EXAMPLE WORKFLOW:</b>
+
+1. Search:
+   /shop search "Python book"
+
+2. View results:
+   [Shows products with prices]
+
+3. Add item:
+   /shop add book-12345
+
+4. Add more items (optional):
+   /shop add book-67890
+
+5. Review cart:
+   /shop cart
+   [Shows items and total]
+
+6. Checkout:
+   /shop checkout --asset USDC
+
+7. Confirm payment
+
+8. Get order confirmation
+   + order tracking number
+
+<b>SUPPORTED MERCHANTS:</b>
+✓ Amazon (more coming)
+✓ Direct partner stores
+✓ Exclusive crypto offers
+
+<b>BENEFITS:</b>
+✓ Use crypto for real products
+✓ No additional conversion
+✓ Instant order confirmation
+✓ Track shipment
+✓ Full order history
+
+<b>TIPS:</b>
+• Check prices in USD and crypto equivalent
+• Shipping is included
+• Orders usually ship 1-3 days
+• Track via provided link
+
+<b>LEARN MORE:</b>
+See USER_GUIDE.md → "Shopping with Crypto"
+      `,
+    };
+  }
+
+  if (topic === 'tutorial' || topic === 'learn' || topic === 'getting-started') {
+    return {
+      success: true,
+      message: `
+<b>🎓 LEARNING &amp; TUTORIALS</b>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>INTERACTIVE TUTORIALS:</b>
+
+Start onboarding:
+   /start
+
+View progress:
+   /progress
+
+<b>SETUP FLOWS (10 min each):</b>
+
+   /setup auth → Authentication basics
+   /setup profile → Wallet &amp; profile
+   /setup transfer → First transfer
+   /setup agents → Agent registration
+   /setup session → Session creation
+   /setup api → Paid API discovery
+
+<b>VIDEO TUTORIALS:</b>
+
+List all:
+   /tutorial
+
+Full walkthrough (60 min):
+   /tutorial full
+
+Quick tutorials (5-15 min):
+   /tutorial wallet - Wallet basics
+   /tutorial transfers - Making transfers
+   /tutorial agents - Using agents
+   /tutorial sessions - Spending sessions
+   /tutorial budgets - Budget management
+
+<b>DURING TUTORIAL:</b>
+
+Next step:
+   /next
+
+Skip:
+   /skip
+
+Check progress:
+   /progress
+
+<b>DOCUMENTATION:</b>
+
+→ GETTING_STARTED.md (5 min overview)
+→ COMMANDS_REFERENCE.md (all commands)
+→ FEATURES_OVERVIEW.md (capabilities)
+→ USER_GUIDE.md (step-by-step guides)
+→ TROUBLESHOOTING.md (common issues)
+
+<b>QUICK PATHS:</b>
+
+Path 1: "I want to send money"
+   /setup transfer → /tutorial transfers
+
+Path 2: "I want to automate"
+   /setup agents → /setup session
+
+Path 3: "I want to learn everything"
+   /tutorial full
+
+Path 4: "I'm stuck"
+   /help &lt;topic&gt; → /troubleshooting
+
+<b>LEARN MORE:</b>
+Everything takes 5-60 minutes.
+No rush - learn at your own pace!
+You can always skip and return later.
+      `,
+    };
+  }
+
+  if (topic === 'troubleshoot' || topic === 'error' || topic === 'problem') {
+    return {
+      success: true,
+      message: `
+<b>🔧 TROUBLESHOOTING HELP</b>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>COMMON ISSUES:</b>
+
+❌ "Session expired"
+   → Run /login to authenticate again
+
+❌ "Insufficient balance"
+   → Check /balance
+   → Add more funds or reduce amount
+
+❌ "Invalid recipient address"
+   → Address must be 0x + 40 hex chars
+   → Or use @username format
+   → Check spelling carefully
+
+❌ "Transfer failed"
+   → Check /activity for error details
+   → Try again in a moment
+   → Use smaller amount
+
+❌ "Agent not executing"
+   → Check /agent-list for agent status
+   → Check /session-list for session status
+   → Check /agent-logs for errors
+   → Session may have expired
+
+❌ "Cannot create session"
+   → Agent must exist first: /agent-list
+   → Check system health: /debug health
+   → Try again in a moment
+
+<b>DIAGNOSTIC COMMANDS:</b>
+
+Check your status:
+   /me
+
+Check system health:
+   /debug health
+
+View recent activity:
+   /activity 20
+
+Check agent logs:
+   /agent-logs agent-id
+
+<b>GETTING HELP:</b>
+
+General help:
+   /help
+
+Topic-specific:
+   /help &lt;topic&gt;
+
+Quick guides:
+   /guide &lt;action&gt;
+
+<b>DETAILED TROUBLESHOOTING:</b>
+See: TROUBLESHOOTING.md
+(Complete guide with solutions)
+
+<b>STILL STUCK:</b>
+Check TROUBLESHOOTING.md for your specific error.
+If not resolved, contact support with:
+   • Error message (exact text)
+   • Command you ran
+   • Your user ID (/me)
+   • When it happened
+      `,
+    };
+  }
+
+  // ========== DEFAULT HELP ==========
   return {
     success: true,
     message: `
-*❓ Help & Support*
+<b>❓ KITE RELAY HELP</b>
 
-*Quick Start:*
-Use \`/start\` for initial onboarding
-Use \`/setup <flow>\` for step-by-step guides
-Use \`/tutorial\` for video lessons
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>I WANT TO:</b>
 
-*Help Topics:*
-/help commands - All onboarding commands
-/help first-transfer - Guide to first transfer
-/help agents - Understanding agents
-/help sessions - Understanding sessions
+Send money:
+   /help transfers
 
-*Progress:*
-/progress - See your learning progress
-/next - Advance to next step
-/skip - Skip a flow
+Create agents:
+   /help agents
 
-*Anytime:*
-This help menu is always available
-No rush - take your time learning
-You can skip flows and revisit later
+Set spending limits:
+   /help sessions
+
+Use paid services:
+   /help discover
+
+Shop online:
+   /help shopping
+
+Learn the platform:
+   /help tutorial
+
+Fix a problem:
+   /help troubleshoot
+
+See all commands:
+   /help commands
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>QUICK START:</b>
+
+1. New here? /start or /setup auth
+2. Need guidance? /tutorial full (60 min)
+3. Have a question? /help &lt;topic&gt;
+4. Need a quick reference? /help commands
+
+<b>DOCUMENTATION:</b>
+📖 GETTING_STARTED.md - 5 min orientation
+📖 COMMANDS_REFERENCE.md - All commands
+📖 USER_GUIDE.md - Step-by-step guides
+📖 TROUBLESHOOTING.md - Fix common issues
+
+<b>LEARN MORE:</b>
+Use /help &lt;topic&gt; where topic is:
+   • transfers
+   • agents
+   • sessions
+   • discover (paid services)
+   • shopping
+   • tutorial
+   • troubleshoot
+   • commands (all)
+
+Need more help? Use /start for guided onboarding!
     `,
     nextSteps: [
-      'Try /setup profile to explore',
-      'Use /help <topic> for detailed help',
+      'Use /help <topic> for specific help',
+      'Try /setup auth to get started',
+      'Or /tutorial full for complete walkthrough',
     ],
   };
 }
@@ -548,10 +1078,10 @@ Autonomous bot that can execute actions on your behalf
 • farmer - For farming operations
 
 *Register:*
-\`kpass agent:register --type trader\`
+\`kpass agent:register --type trader --output json\`
 
 *View Agents:*
-\`kpass user agents\`
+\`kpass user agents --output json\`
 
 *Next Steps:*
 Create a spending session for your agent

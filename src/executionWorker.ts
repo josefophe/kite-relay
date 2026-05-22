@@ -219,9 +219,10 @@ export class ExecutionWorker {
         }
         output = await executeKpass(userId, args, "agent-kpass");
       } else if (command === "ksearch") {
-        // Example: ksearch "AI grants"
+        // Example: ksearch services list --query "AI grants" --output json
         const query = commandArgs?.query || "query";
-        output = await executeKsearch(userId, [query], "agent-ksearch");
+        const args = ["services", "list", "--query", query, "--asset", "USDC", "--limit", "10", "--output", "json"];
+        output = await executeKsearch(userId, args, "agent-ksearch");
       } else if (command === "commerce") {
         // commerce agent commands: delegate to commerceService flows
         const type = (commandArgs && (commandArgs as any).type) || "airtime";

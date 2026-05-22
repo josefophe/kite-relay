@@ -312,23 +312,23 @@ export class ToolRegistry {
           action: {
             type: "string",
             description: "Action to perform",
-            enum: ["create", "list", "status", "use"],
+            enum: ["register", "create", "list", "status", "use"],
           },
-          maxAmountPerTx: {
-            type: "string",
-            description: "Max amount per transaction in USDC (e.g., '100')",
-          },
-          ttl: {
-            type: "string",
-            description: "Time to live (e.g., '24h', '1h', '7d')",
-          },
-          taskSummary: {
-            type: "string",
-            description: "Description of session purpose",
+          delegation: {
+            type: "object",
+            description: "Delegation JSON with payment policy (required for create action)",
           },
           requestId: {
             type: "string",
             description: "Request ID for status check",
+          },
+          wait: {
+            type: "boolean",
+            description: "Wait for approval when checking status",
+          },
+          statusFilter: {
+            type: "string",
+            description: "Filter sessions by status (active, expired, etc)",
           },
           sessionId: {
             type: "string",
@@ -345,11 +345,11 @@ export class ToolRegistry {
         try {
           const result = await requestSessionSkill({
             userId,
-            action: (args.action as "create" | "list" | "status" | "use") || "list",
-            maxAmountPerTx: args.maxAmountPerTx ? (args.maxAmountPerTx as string) : undefined,
-            ttl: args.ttl ? (args.ttl as string) : undefined,
-            taskSummary: args.taskSummary ? (args.taskSummary as string) : undefined,
+            action: (args.action as "register" | "create" | "list" | "status" | "use") || "list",
+            delegation: args.delegation ? (args.delegation as string | Record<string, unknown>) : undefined,
             requestId: args.requestId ? (args.requestId as string) : undefined,
+            wait: args.wait ? (args.wait as boolean) : undefined,
+            statusFilter: args.statusFilter ? (args.statusFilter as string) : undefined,
             sessionId: args.sessionId ? (args.sessionId as string) : undefined,
           });
 
@@ -409,7 +409,7 @@ export class ToolRegistry {
           const result = await x402ExecuteSkill({
             userId,
             url: (args.url as string) || "",
-            method: args.method ? (args.method as string) : "GET",
+            method: args.method ? (args.method as string) : "POST",
             headers: args.headers ? (args.headers as Record<string, string>) : undefined,
             body: args.body ? (args.body as Record<string, unknown>) : undefined,
             sessionId: args.sessionId ? (args.sessionId as string) : undefined,
@@ -427,26 +427,26 @@ export class ToolRegistry {
     });
 
     // ════════════════════════════════════════════════════════════════
-    // AGENT MANAGEMENT TOOLS
+    // AGENT MANAGEMENT TOOLS (READ-ONLY)
     // ════════════════════════════════════════════════════════════════
 
     this.register({
       name: "manageAgents",
       typeName: "manageAgents",
-      description: "Register and manage autonomous agents",
+      description: "List agents and sessions, check user authentication (READ-ONLY)",
       category: "agent",
       parameters: {
         type: "object",
         properties: {
           action: {
             type: "string",
-            description: "Action to perform",
-            enum: ["register", "list"],
+            description: "Read-only action to perform",
+            enum: ["list-agents", "list-sessions", "check-user"],
           },
-          agentType: {
+          statusFilter: {
             type: "string",
-            description: "Agent type",
-            enum: ["trader", "farmer", "collector", "monitor", "autonomous"],
+            description: "Filter sessions by status (active or expired)",
+            enum: ["active", "expired"],
           },
         },
         required: ["action"],
@@ -459,8 +459,8 @@ export class ToolRegistry {
         try {
           const result = await manageAgentsSkill({
             userId,
-            action: (args.action as "register" | "list") || "list",
-            agentType: args.agentType ? (args.agentType as string) : undefined,
+            action: (args.action as "list-agents" | "list-sessions" | "check-user") || "check-user",
+            statusFilter: args.statusFilter ? (args.statusFilter as "active" | "expired") : undefined,
           });
 
           return {
@@ -469,7 +469,7 @@ export class ToolRegistry {
           };
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
-          return { success: false, output: `Agent error: ${msg}` };
+          return { success: false, output: `Management error: ${msg}` };
         }
       },
     });

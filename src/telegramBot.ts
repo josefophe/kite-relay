@@ -43,9 +43,14 @@ import {
   handleDebugConfig,
   handleDebugDatabase,
   handleDebugAgent,
+  handleRequestSession,
   handleBuyAirtime,
   handleBuyData,
   handlePaymentHistory,
+  handleScheduledJobs,
+  handleStopTopup,
+  handlePauseTopup,
+  handleResumeTopup,
   handleOnboardingStart,
   handleOnboardingTutorial,
   handleOnboardingSetup,
@@ -109,90 +114,57 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
   const originalSendMessage = bot.sendMessage.bind(bot);
   (bot as any).sendMessage = (chatId: number | string, text: string, options: TelegramBot.SendMessageOptions = {}) => {
     return originalSendMessage(chatId, text, {
-      parse_mode: "Markdown",
+      parse_mode: "HTML",
       disable_web_page_preview: true,
       ...options,
     });
   };
 
   const renderAutonomousHelp = (): string =>
-    `🤖 *KiteRelay Autonomous AI Assistant*
-` +
-    `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-` +
-    `I help you execute real commerce tasks using Kite AI, agents, and tool-based automation.
+    `<b>🤖 KiteRelay Autonomous AI Assistant</b>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+I help you execute real commerce tasks using Kite AI, agents, and tool-based automation.
 
-` +
-    `*What you can ask me:*
-` +
-    `• Send payments → _Send @charity 5 USDC_
-` +
-    `• Transfer tokens → _Transfer 2 KITE to @john_
-` +
-    `• Check wallet → _What's my balance?_
-` +
-    `• Search services → _Find verified aid organizations_
-` +
-    `• Register agents → _Register autonomous trading agent_
-` +
-    `• Pay services → _Pay subscription to service X_
+<b>What you can ask me:</b>
+• Send payments → <i>Send @charity 5 USDC</i>
+• Transfer tokens → <i>Transfer 2 KITE to @john</i>
+• Check wallet → <i>What's my balance?</i>
+• Search services → <i>Find verified aid organizations</i>
+• Register agents → <i>Register autonomous trading agent</i>
+• Pay services → <i>Pay subscription to service X</i>
 
-` +
-    `*Getting started:*
-` +
-    `1. Run /login
-` +
-    `2. Run /agent-register trader
-` +
-    `3. Use natural language or /agent commands
+<b>Getting started:</b>
+1. Run /login
+2. Run /agent-register trader
+3. Use natural language or /agent commands
 
-` +
-    `*Quick examples:*
-` +
-    `• Send @charity 5 USDC
-` +
-    `• Transfer 2 KITE to @john
-` +
-    `• Check my wallet
-` +
-    `• Find verified aid organizations
-` +
-    `• Register autonomous trading agent
-` +
-    `• Pay for API service
-` +
-    `• Search service ID
+<b>Quick examples:</b>
+• Send @charity 5 USDC
+• Transfer 2 KITE to @john
+• Check my wallet
+• Find verified aid organizations
+• Register autonomous trading agent
+• Pay for API service
+• Search service ID
 `;
 
   const renderExamplesHelp = (): string =>
-    `🚀 *KiteRelay Demo Examples*
-` +
-    `━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-` +
-    `*Payments*
-` +
-    `• Send @charity 5 USDC
-` +
-    `• Pay @vendor 2 KITE
+    `<b>🚀 KiteRelay Demo Examples</b>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>Payments</b>
+• Send @charity 5 USDC
+• Pay @vendor 2 KITE
 
-` +
-    `*Wallet*
-` +
-    `• What's my balance?
+<b>Wallet</b>
+• What's my balance?
 
-` +
-    `*Search*
-` +
-    `• Find verified aid organizations
-` +
-    `• Search service ID for AI providers
+<b>Search</b>
+• Find verified aid organizations
+• Search service ID for AI providers
 
-` +
-    `*Agents*
-` +
-    `• Register autonomous trading agent
-` +
-    `• /agent-create Monitor KITE balance every hour
+<b>Agents</b>
+• Register autonomous trading agent
+• /agent-create Monitor KITE balance every hour
 `;
 
   bot.on("message", async (msg: Message) => {
@@ -293,7 +265,7 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
       if (incomingText === "/start") {
         try {
           const result = await handleOnboardingStart(userId);
-          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "HTML" });
         } catch (error) {
           logger.error({ userId, error }, "onboarding start failed");
           await bot.sendMessage(
@@ -307,7 +279,7 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
         try {
           const args = incomingText.split(" ").slice(1);
           const result = await handleOnboardingTutorial(userId, args[0]);
-          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "HTML" });
         } catch (error) {
           logger.error({ userId, error }, "tutorial failed");
           await bot.sendMessage(
@@ -321,7 +293,7 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
         try {
           const args = incomingText.split(" ").slice(1);
           const result = await handleOnboardingSetup(userId, args[0]);
-          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "HTML" });
         } catch (error) {
           logger.error({ userId, error }, "setup flow failed");
           await bot.sendMessage(
@@ -334,7 +306,7 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
       else if (incomingText === "/progress") {
         try {
           const result = await handleOnboardingProgress(userId);
-          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "HTML" });
         } catch (error) {
           logger.error({ userId, error }, "progress check failed");
           await bot.sendMessage(
@@ -348,7 +320,8 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
         try {
           const args = incomingText.split(" ").slice(1);
           const result = await handleOnboardingHelp(userId, args[0]);
-          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+          // Use HTML parse mode for safety with formatting
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "HTML" });
         } catch (error) {
           logger.error({ userId, error }, "help failed");
           await bot.sendMessage(
@@ -361,7 +334,7 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
       else if (incomingText === "/next") {
         try {
           const result = await handleOnboardingNext(userId);
-          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "HTML" });
         } catch (error) {
           logger.error({ userId, error }, "next step failed");
           await bot.sendMessage(
@@ -374,7 +347,7 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
       else if (incomingText === "/skip") {
         try {
           const result = await handleOnboardingSkip(userId);
-          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "HTML" });
         } catch (error) {
           logger.error({ userId, error }, "skip flow failed");
           await bot.sendMessage(
@@ -388,7 +361,7 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
         try {
           const args = incomingText.split(" ").slice(1);
           const result = await handleOnboardingGuide(userId, args[0]);
-          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "HTML" });
         } catch (error) {
           logger.error({ userId, error }, "guide failed");
           await bot.sendMessage(
@@ -399,10 +372,10 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
       }
       // ========== LEGACY HELP COMMANDS ==========
       else if (incomingText === "/ai-help" || incomingText === "/autonomous-help") {
-        await bot.sendMessage(msg.chat.id, renderAutonomousHelp());
+        await bot.sendMessage(msg.chat.id, renderAutonomousHelp(), { parse_mode: "HTML" });
       }
       else if (incomingText === "/examples") {
-        await bot.sendMessage(msg.chat.id, renderExamplesHelp());
+        await bot.sendMessage(msg.chat.id, renderExamplesHelp(), { parse_mode: "HTML" });
       }
 
       // ========== AUTHENTICATION: STEP 1 ==========
@@ -856,7 +829,7 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
         }
 
         const url = parts[1];
-        const method = parts[2] || "GET";
+        const method = parts[2] || "POST";
         const headersJson = parts.slice(3).join(" ") || undefined;
 
         try {
@@ -969,11 +942,12 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
         if (parts.length < 4) {
           return await bot.sendMessage(
             msg.chat.id,
-            `❌ Usage: /buy-airtime <phone> <amount-NGN> <provider>\n\n` +
+            `❌ Usage: /buy-airtime <phone> <amount-NGN> <provider> [--session-id <SESSION_ID>]\n\n` +
             `Examples:\n` +
-            `• /buy-airtime 08012345678 3000 MTN\n` +
+            `• /buy-airtime 08012345678 3000 MTN --session-id sess_abc123\n` +
             `• /buy-airtime +2348012345678 1000 GLO\n\n` +
-            `Supported providers: MTN, GLO, AIRTEL, NTEL`
+            `Supported providers: MTN, GLO, AIRTEL, NTEL\n\n` +
+            `💡 Tip: Use /request-session first to get a session ID`
           );
         }
 
@@ -981,8 +955,16 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
         const amountStr = parts[2];
         const providerCode = parts[3];
 
+        // Parse optional --session-id flag
+        let sessionId: string | undefined;
+        for (let i = 4; i < parts.length; i++) {
+          if (parts[i] === "--session-id" && i + 1 < parts.length) {
+            sessionId = parts[++i];
+          }
+        }
+
         try {
-          const result = await handleBuyAirtime(userId, phoneNumber, amountStr, providerCode);
+          const result = await handleBuyAirtime(userId, phoneNumber, amountStr, providerCode, sessionId);
           await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
         } catch (error) {
           logger.error({ userId, error }, "buy-airtime failed");
@@ -993,7 +975,7 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
         }
       }
 
-      // ========== PHASE 4: COMMERCE - PAYMENT HISTORY ==========
+      // ========== PHASE 4: COMMERCE - BUY DATA ==========
       else if (incomingText.startsWith("/buy-data")) {
         if (!ensurePrivateChat(msg.chat.type)) {
           return await bot.sendMessage(msg.chat.id, "⚠️ For security, purchases must be in private chat.");
@@ -1003,10 +985,11 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
         if (parts.length < 4) {
           return await bot.sendMessage(
             msg.chat.id,
-            `❌ Usage: /buy-data <phone|@username> <amount-NGN> <provider>\n\n` +
+            `❌ Usage: /buy-data <phone|@username> <amount-NGN> <provider> [--session-id <SESSION_ID>]\n\n` +
               `Examples:\n` +
-              `• /buy-data 08012345678 2000 MTN\n` +
-              `• /buy-data @alice 1500 AIRTEL`
+              `• /buy-data 08012345678 2000 MTN --session-id sess_abc123\n` +
+              `• /buy-data @alice 1500 AIRTEL\n\n` +
+              `💡 Tip: Use /request-session first to get a session ID`
           );
         }
 
@@ -1014,8 +997,16 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
         const amount = parts[2];
         const provider = parts[3];
 
+        // Parse optional --session-id flag
+        let sessionId: string | undefined;
+        for (let i = 4; i < parts.length; i++) {
+          if (parts[i] === "--session-id" && i + 1 < parts.length) {
+            sessionId = parts[++i];
+          }
+        }
+
         try {
-          const result = await handleBuyData(userId, recipient, amount, provider);
+          const result = await handleBuyData(userId, recipient, amount, provider, sessionId);
           await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
         } catch (error) {
           logger.error({ userId, error }, "buy-data failed");
@@ -1032,16 +1023,28 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
         if (parts.length < 4) {
           return await bot.sendMessage(
             msg.chat.id,
-            `❌ Usage: /auto-topup <amount-NGN> <frequency> <provider>\n\nExamples:\n• /auto-topup 2000 weekly MTN`);
+            `❌ Usage: /auto-topup <amount-NGN> <frequency> <provider> --session-id <SESSION_ID>\n\n` +
+            `Examples:\n` +
+            `• /auto-topup 3000 1hour MTN --session-id sess_abc123\n` +
+            `• /auto-topup 2000 daily GLO --session-id sess_abc123\n\n` +
+            `💡 Frequencies: 1hour, 2hours, daily, weekly`);
         }
 
         const amount = parts[1];
         const frequency = parts[2];
         const provider = parts[3];
 
+        // Parse optional --session-id flag
+        let sessionId: string | undefined;
+        for (let i = 4; i < parts.length; i++) {
+          if (parts[i] === "--session-id" && i + 1 < parts.length) {
+            sessionId = parts[++i];
+          }
+        }
+
         try {
-          const result = await handleAutoTopup(userId, amount, frequency, provider);
-          await bot.sendMessage(msg.chat.id, result.output);
+          const result = await handleAutoTopup(userId, amount, frequency, provider, sessionId);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
         } catch (error) {
           logger.error({ userId, error }, "auto-topup failed");
           await bot.sendMessage(msg.chat.id, `❌ Scheduling failed: ${error instanceof Error ? error.message : "unexpected error"}`);
@@ -1058,19 +1061,62 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
         if (parts.length < 4) {
           return await bot.sendMessage(
             msg.chat.id,
-            `❌ Usage: /schedule-airtime <amount-NGN> <frequency> <provider>\n\nExamples:\n• /schedule-airtime 3000 weekly MTN`);
+            `❌ Usage: /schedule-airtime <amount-NGN> <frequency> <provider> --session-id <SESSION_ID>\n\n` +
+            `Examples:\n` +
+            `• /schedule-airtime 2000 daily GLO --session-id sess_abc123\n` +
+            `• /schedule-airtime 5000 weekly AIRTEL --session-id sess_abc123`);
         }
 
         const amount = parts[1];
         const frequency = parts[2];
         const provider = parts[3];
 
+        // Parse optional --session-id flag
+        let sessionId: string | undefined;
+        for (let i = 4; i < parts.length; i++) {
+          if (parts[i] === "--session-id" && i + 1 < parts.length) {
+            sessionId = parts[++i];
+          }
+        }
+
         try {
-          const result = await handleScheduleAirtime(userId, amount, frequency, provider);
-          await bot.sendMessage(msg.chat.id, result.output);
+          const result = await handleScheduleAirtime(userId, amount, frequency, provider, sessionId);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
         } catch (error) {
           logger.error({ userId, error }, "schedule-airtime failed");
           await bot.sendMessage(msg.chat.id, `❌ Scheduling failed: ${error instanceof Error ? error.message : "unexpected error"}`);
+        }
+      }
+      else if (incomingText === "/request-session" || incomingText.startsWith("/request-session ")) {
+        if (!ensurePrivateChat(msg.chat.type)) {
+          return await bot.sendMessage(msg.chat.id, "⚠️ For security, sessions must be requested in private chat.");
+        }
+
+        // Parse optional parameters: /request-session [--max-per-tx <USD>] [--max-total <USD>] [--ttl <seconds>]
+        const parts = incomingText.split(" ");
+        let maxPerTx: string | undefined;
+        let maxTotal: string | undefined;
+        let ttlSeconds: string | undefined;
+
+        for (let i = 1; i < parts.length; i++) {
+          if (parts[i] === "--max-per-tx" && i + 1 < parts.length) {
+            maxPerTx = parts[++i];
+          } else if (parts[i] === "--max-total" && i + 1 < parts.length) {
+            maxTotal = parts[++i];
+          } else if (parts[i] === "--ttl" && i + 1 < parts.length) {
+            ttlSeconds = parts[++i];
+          }
+        }
+
+        try {
+          const result = await handleRequestSession(userId, maxPerTx, maxTotal, ttlSeconds);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "HTML" });
+        } catch (error) {
+          logger.error({ userId, error }, "request-session failed");
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Session request failed: ${error instanceof Error ? error.message : "unexpected error"}`
+          );
         }
       }
       else if (incomingText === "/payment-history") {
@@ -1083,6 +1129,80 @@ export function createTelegramBot(botToken: string, enablePolling: boolean = tru
             msg.chat.id,
             `❌ Failed to retrieve history: ${error instanceof Error ? error.message : "unexpected error"}`
           );
+        }
+      }
+
+      // ========== PHASE 4: COMMERCE - SCHEDULED JOBS MANAGEMENT ==========
+      else if (incomingText === "/scheduled-jobs") {
+        try {
+          const result = await handleScheduledJobs(userId);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+        } catch (error) {
+          logger.error({ userId, error }, "scheduled-jobs failed");
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Failed to list jobs: ${error instanceof Error ? error.message : "unexpected error"}`
+          );
+        }
+      }
+      else if (incomingText.startsWith("/stop-topup")) {
+        if (!ensurePrivateChat(msg.chat.type)) {
+          return await bot.sendMessage(msg.chat.id, "⚠️ For security, this must be in private chat.");
+        }
+
+        const parts = incomingText.split(" ");
+        const jobId = parts[1];
+
+        if (!jobId) {
+          return await bot.sendMessage(msg.chat.id, `❌ Usage: /stop-topup <job-id>\n\nView jobs: /scheduled-jobs`);
+        }
+
+        try {
+          const result = await handleStopTopup(userId, jobId);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+        } catch (error) {
+          logger.error({ userId, error }, "stop-topup failed");
+          await bot.sendMessage(msg.chat.id, `❌ Failed: ${error instanceof Error ? error.message : "unexpected error"}`);
+        }
+      }
+      else if (incomingText.startsWith("/pause-topup")) {
+        if (!ensurePrivateChat(msg.chat.type)) {
+          return await bot.sendMessage(msg.chat.id, "⚠️ For security, this must be in private chat.");
+        }
+
+        const parts = incomingText.split(" ");
+        const jobId = parts[1];
+
+        if (!jobId) {
+          return await bot.sendMessage(msg.chat.id, `❌ Usage: /pause-topup <job-id>\n\nView jobs: /scheduled-jobs`);
+        }
+
+        try {
+          const result = await handlePauseTopup(userId, jobId);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+        } catch (error) {
+          logger.error({ userId, error }, "pause-topup failed");
+          await bot.sendMessage(msg.chat.id, `❌ Failed: ${error instanceof Error ? error.message : "unexpected error"}`);
+        }
+      }
+      else if (incomingText.startsWith("/resume-topup")) {
+        if (!ensurePrivateChat(msg.chat.type)) {
+          return await bot.sendMessage(msg.chat.id, "⚠️ For security, this must be in private chat.");
+        }
+
+        const parts = incomingText.split(" ");
+        const jobId = parts[1];
+
+        if (!jobId) {
+          return await bot.sendMessage(msg.chat.id, `❌ Usage: /resume-topup <job-id>\n\nView jobs: /scheduled-jobs`);
+        }
+
+        try {
+          const result = await handleResumeTopup(userId, jobId);
+          await bot.sendMessage(msg.chat.id, result.output, { parse_mode: "Markdown" });
+        } catch (error) {
+          logger.error({ userId, error }, "resume-topup failed");
+          await bot.sendMessage(msg.chat.id, `❌ Failed: ${error instanceof Error ? error.message : "unexpected error"}`);
         }
       }
 

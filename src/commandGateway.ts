@@ -62,7 +62,7 @@ function assertAuthentication(userId: number): { exists: boolean; path: string }
 /**
  * STEP 1: Start authentication flow
  * User sends: /login email@example.com
- * Bot executes: kpass login init --email email@example.com
+ * Bot executes: kpass login init --email email@example.com --client agent --output json --no-interactive
  */
 export async function handleLoginInit(userId: number, email: string): Promise<CommandResult> {
   if (!isCommandAllowed("login")) {
@@ -78,7 +78,8 @@ export async function handleLoginInit(userId: number, email: string): Promise<Co
 
   const startTime = Date.now();
   try {
-    const output = await executeKpass(userId, ["login", "init", "--email", sanitized, "--output", "json"], "login-init");
+    // Per SKILL.md: Must include --client agent and --no-interactive flags
+    const output = await executeKpass(userId, ["login", "init", "--email", sanitized, "--client", "agent", "--output", "json", "--no-interactive"], "login-init");
 
     let loginId = "";
     try {
@@ -120,7 +121,8 @@ export async function handleLoginInit(userId: number, email: string): Promise<Co
       
       // Automatically initiate signup for new users
       try {
-        const signupOutput = await executeKpass(userId, ["signup", "init", "--email", sanitized, "--output", "json"], "signup-init");
+        // Per SKILL.md: Must include --client agent and --no-interactive flags
+        const signupOutput = await executeKpass(userId, ["signup", "init", "--email", sanitized, "--client", "agent", "--output", "json", "--no-interactive"], "signup-init");
         let signupId = "";
         try {
           const response = JSON.parse(signupOutput);
@@ -188,10 +190,13 @@ export async function handleVerify(userId: number, loginId: string, code: string
 
   const startTime = Date.now();
   try {
+    // Per SKILL.md: Use KPASS_LOGIN_CODE env var instead of --code flag for security
+    // (env vars are not visible in process listings)
     const output = await executeKpass(
       userId,
-      ["login", "verify", "--login-id", sanitizedId, "--code", sanitizedCode, "--output", "json"],
-      "login-verify"
+      ["login", "verify", "--login-id", sanitizedId, "--output", "json", "--no-interactive"],
+      "login-verify",
+      { KPASS_LOGIN_CODE: sanitizedCode }
     );
 
     let passportId = `user_${userId}`;
@@ -314,7 +319,7 @@ export async function handleSearch(userId: number, query: string): Promise<Comma
       "services",
       "list",
       "--payment-approach",
-      "x402_http",
+      "x402",
       "--asset",
       "USDC",
       "--limit",
@@ -584,7 +589,7 @@ export async function handleKsearchServicesList(userId: number, query?: string):
       "services",
       "list",
       "--payment-approach",
-      "x402_http",
+      "x402",
       "--asset",
       "USDC",
       "--limit",
@@ -712,7 +717,7 @@ export async function handleTransfer(userId: number, textArguments: string): Pro
     const targetSymbol = tokenSymbol.toUpperCase();
     const output = await executeKpass(
       userId,
-      ["wallet", "transfer", "--to", toAddress, "--amount", amount, "--token", targetSymbol, "--output", "json"],
+      ["wallet", "send", "--to", toAddress, "--amount", amount, "--asset", targetSymbol, "--output", "json"],
       "transfer"
     );
 
@@ -951,7 +956,8 @@ export async function handleSignupInit(userId: number, email: string): Promise<C
 
   const startTime = Date.now();
   try {
-    const output = await executeKpass(userId, ["signup", "init", "--email", sanitized, "--output", "json"], "signup-init");
+    // Per SKILL.md: Must include --client agent and --no-interactive flags
+    const output = await executeKpass(userId, ["signup", "init", "--email", sanitized, "--client", "agent", "--output", "json", "--no-interactive"], "signup-init");
     let signupId = "";
     try {
       const response = JSON.parse(output);
@@ -1044,10 +1050,13 @@ export async function handleSignupExchange(userId: number, signupId: string, exc
 
   const startTime = Date.now();
   try {
+    // Use KPASS_SIGNUP_CODE env var instead of deprecated --exchange-token flag
+    // Per SKILL.md: "--exchange-token flag was removed; use KPASS_SIGNUP_CODE env var instead"
     const output = await executeKpass(
       userId,
-      ["signup", "exchange", "--signup-id", sanitizedId, "--exchange-token", sanitizedToken, "--output", "json"],
-      "signup-exchange"
+      ["signup", "exchange", "--signup-id", sanitizedId, "--output", "json"],
+      "signup-exchange",
+      { KPASS_SIGNUP_CODE: sanitizedToken }
     );
 
     let passportId = `user_${userId}`;
@@ -1244,6 +1253,139 @@ export async function handleUserSessions(userId: number, statusFilter?: string):
 // ════════════════════════════════════════════════════════════════
 
 /**
+ * Request a spending session for commerce (airtime, data, etc.)
+ * 
+ * Unified flow:
+ * 1. Register agent automatically (silent)
+ * 2. Create session with commerce delegation (default: $10 per-tx, $50 total, 1 hour)
+ * 3. Show approval URL
+ * 4. Wait for approval with polling
+ * 5. Return session ID on approval
+ * 
+ * Usage: /request-session [--max-per-tx <USD>] [--max-total <USD>] [--ttl <seconds>]
+ * Default: /request-session (creates $10 per-tx, $50 total, 3600s session)
+ */
+export async function handleRequestSession(
+  userId: number,
+  maxPerTxUSD?: string,
+  maxTotalUSD?: string,
+  ttlSeconds?: string
+): Promise<CommandResult> {
+  if (!isCommandAllowed("request-session")) {
+    return { success: false, output: "Session request is not allowed." };
+  }
+
+  const authStatus = assertAuthentication(userId);
+  if (!authStatus.exists) {
+    return { success: false, output: "❌ Not authenticated. Please run /login first." };
+  }
+
+  const startTime = Date.now();
+  try {
+    // Step 1: Silent agent registration (ensure agent exists)
+    const registerOutput = await executeKpass(
+      userId,
+      ["agent:register", "--type", "commerce", "--output", "json"],
+      "session-register-agent"
+    );
+    
+    logger.info({ userId, durationMs: Date.now() - startTime }, "telemetry: agent auto-registered for session");
+
+    // Step 2: Parse defaults and create delegation JSON
+    // Default: $10 per-tx, $50 total, 1 hour (3600s)
+    const perTx = parseFloat(maxPerTxUSD || "10.00");
+    const total = parseFloat(maxTotalUSD || "50.00");
+    const ttl = parseInt(ttlSeconds || "3600", 10);
+
+    if (isNaN(perTx) || perTx <= 0) {
+      return { success: false, output: "❌ Invalid max-per-tx. Provide a positive USD amount." };
+    }
+    if (isNaN(total) || total <= 0) {
+      return { success: false, output: "❌ Invalid max-total. Provide a positive USD amount." };
+    }
+    if (isNaN(ttl) || ttl <= 0) {
+      return { success: false, output: "❌ Invalid TTL. Provide positive seconds." };
+    }
+
+    // Build delegation JSON per form-session-delegation SKILL
+    const delegation = {
+      task: {
+        summary: "Commerce purchases (airtime, data, mobile services)",
+      },
+      payment_policy: {
+        allowed_payment_approaches: ["x402"],
+        assets: ["USDC"],
+        max_amount_per_tx: perTx.toFixed(2),
+        max_total_amount: total.toFixed(2),
+        ttl_seconds: ttl,
+      },
+    };
+
+    // Step 3: Create session with delegation
+    const createOutput = await executeKpass(
+      userId,
+      [
+        "agent:session",
+        "create",
+        "--delegation",
+        JSON.stringify(delegation),
+        "--output",
+        "json",
+      ],
+      "session-create"
+    );
+
+    let requestId = "";
+    let approvalUrl = "";
+    try {
+      const parsed = JSON.parse(createOutput);
+      requestId = parsed.request_id || parsed.requestId || "";
+      approvalUrl = parsed.approval_url || parsed.approvalUrl || "";
+    } catch {
+      // Continue without parsed data
+    }
+
+    // Step 4: Display approval message
+    let message = `🛡️ <b>Spending Session Approval Required</b>\n\n`;
+    message += `Your commerce session is ready for approval:\n\n`;
+    if (approvalUrl) {
+      message += `🌐 <a href="${approvalUrl}">Open Approval Link</a>\n\n`;
+    }
+    message += `💰 <b>Budget Details</b>\n`;
+    message += `Per-transaction limit: $${perTx.toFixed(2)} USDC\n`;
+    message += `Total budget: $${total.toFixed(2)} USDC\n`;
+    message += `Valid for: ${Math.floor(ttl / 60)} minutes\n\n`;
+    message += `📋 Request ID: <code>${requestId}</code>\n\n`;
+    message += `✅ After approving with your passkey, use:\n`;
+    message += `<code>/buy-airtime &lt;phone&gt; &lt;amount&gt; &lt;provider&gt; --session-id &lt;SESSION_ID&gt;</code>\n`;
+
+    logger.info(
+      { userId, requestId, maxPerTx: perTx, maxTotal: total, ttlSec: ttl, durationMs: Date.now() - startTime },
+      "telemetry: session created, awaiting approval"
+    );
+
+    return {
+      success: true,
+      output: message,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: errorMsg, durationMs: Date.now() - startTime }, "telemetry: request-session failed");
+    
+    let output = `❌ Session request failed: ${errorMsg}`;
+    
+    // Provide helpful guidance for common errors
+    if (errorMsg.toLowerCase().includes("code 3") || errorMsg.toLowerCase().includes("auth")) {
+      output = `❌ Not authenticated. Please run /login first.`;
+    } else if (errorMsg.toLowerCase().includes("registered")) {
+      output = `❌ Agent registration failed. Please try again.`;
+    }
+
+    return { success: false, output };
+  }
+}
+
+/**
  * Register an autonomous agent with kpass
  * 
  * Agent types allow different agent identities for specialized tasks
@@ -1335,31 +1477,55 @@ export async function handleSessionCreate(
       return { success: false, output: "❌ Invalid max amount. Provide a positive number." };
     }
 
-    // NOTE: Agent validation moved to kpass - it will return a clear error if no agent exists
-    // This avoids timing issues where a newly-registered agent might not be immediately queryable
-
-    const maxTotal = (maxAmountNum * 5).toString();
+    // CONSTRUCT DELEGATION PER SKILL.md: form-session-delegation
+    // Using Path B: Known Amount (user-specified budget)
     
+    // Convert TTL to seconds per SKILL.md
+    let ttlSeconds = 3600; // default 1 hour
+    if (ttl.includes("24h") || ttl.includes("day")) {
+      ttlSeconds = 86400;
+    } else if (ttl.includes("7d")) {
+      ttlSeconds = 604800;
+    } else if (ttl.includes("h") || ttl.includes("hour")) {
+      const hours = parseInt(ttl);
+      if (!isNaN(hours)) ttlSeconds = hours * 3600;
+    }
+
+    // Calculate max_total_amount: 5x per-tx as default for multi-request tasks
+    const maxTotalAmount = (maxAmountNum * 5).toString();
+    
+    // Build delegation object per SKILL.md schema
+    const delegation = {
+      task: {
+        summary: taskSummary || "Autonomous agent spending session with per-transaction and total budget limits enforced."
+      },
+      payment_policy: {
+        allowed_payment_approaches: ["x402"],
+        assets: ["USDC"],
+        max_amount_per_tx: maxAmountPerTx,
+        max_total_amount: maxTotalAmount,
+        ttl_seconds: ttlSeconds
+      }
+      // execution_constraints: omitted - agent cannot know endpoints ahead of time
+    };
+
+    // Log delegation for debugging
+    logger.info({
+      userId,
+      delegation,
+      durationMs: Date.now() - startTime
+    }, "telemetry: session delegation constructed per SKILL.md");
+
+    // PASS DELEGATION TO KPASS (not wrapped in outer object per SKILL.md)
+    const delegationJson = JSON.stringify(delegation);
     const args = [
       "agent:session",
       "create",
-      "--max-amount-per-tx",
-      maxAmountPerTx,
-      "--max-total-amount",
-      maxTotal,
-      "--ttl",
-      ttl,
-      "--assets",
-      "USDC",
-      "--payment-approach",
-      "x402_http",
+      "--delegation",
+      delegationJson,
       "--output",
       "json",
     ];
-
-    if (taskSummary) {
-      args.push("--task-summary", taskSummary);
-    }
 
     const output = await executeKpass(userId, args, "session-create");
 
@@ -1367,23 +1533,47 @@ export async function handleSessionCreate(
       userId,
       maxAmountPerTx,
       ttl,
+      maxTotal: maxTotalAmount,
       durationMs: Date.now() - startTime,
     }, "telemetry: spending session request initiated");
 
     try {
       const response = JSON.parse(output);
       const requestId = String(response?.request_id || response?.id || "unknown").substring(0, 50);
+      const approvalUrl = String(response?.approval_url || response?.approvalUrl || "").substring(0, 500);
       const displayTtl = String(ttl || "unknown").substring(0, 50);
+      
+      // Build message per SKILL.md Step 2 - show approval URL prominently
+      let message = `💳 <b>Spending Session Created</b>\n`;
+      message += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      
+      message += `📋 <b>Session Details</b>\n`;
+      message += `<pre>Request ID:   ${requestId}\n`;
+      message += `Max per TX:   ${maxAmountPerTx} USDC\n`;
+      message += `Total Budget: ${maxTotalAmount} USDC\n`;
+      message += `TTL:          ${displayTtl}\n`;
+      message += `Status:       PENDING APPROVAL</pre>\n\n`;
+      
+      // CRITICAL: Show approval URL per SKILL.md Step 2
+      if (approvalUrl) {
+        message += `🔗 <b>APPROVAL LINK (Click to approve):</b>\n`;
+        message += `${approvalUrl}\n\n`;
+        message += `<b>Or approve in Kite Passport app, then check status:</b>\n`;
+      } else {
+        message += `<b>Check approval status:</b>\n`;
+      }
+      
+      message += `<code>/session-status ${requestId}</code>\n\n`;
+      
+      message += `✅ <b>Delegation Policy</b>\n`;
+      message += `  • Payment: x402 HTTP\n`;
+      message += `  • Asset: USDC\n`;
+      message += `  • Per-tx limit: ${maxAmountPerTx} USDC\n`;
+      message += `  • Total limit: ${maxTotalAmount} USDC`;
+      
       return {
         success: true,
-        output:
-          `💳 Spending Session Created\n` +
-          `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-          `Request ID: ${requestId}\n` +
-          `Max per TX: ${maxAmountPerTx}\n` +
-          `TTL: ${displayTtl}\n` +
-          `Status: Pending Approval\n` +
-          `\nCheck approval with: /session-status ${requestId}`,
+        output: message,
       };
     } catch {
       const sanitized = output.substring(0, 500);
@@ -1391,6 +1581,12 @@ export async function handleSessionCreate(
     }
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : String(error);
+    
+    logger.error({ 
+      userId, 
+      error: errorMsg,
+      durationMs: Date.now() - startTime
+    }, "telemetry: session creation failed");
     
     // Enhanced error reporting for kpass-specific errors
     let userFriendlyError = errorMsg;
@@ -1403,10 +1599,19 @@ export async function handleSessionCreate(
         `Please re-authenticate:\n` +
         `1. /login your@email.com\n` +
         `2. /verify <login-id> <code>`;
-    } else if (errorMsg.includes("agent") || errorMsg.includes("session")) {
+    } else if (errorMsg.includes("code 2") || errorMsg.includes("wrapping")) {
       userFriendlyError = 
-        `❌ Session Creation Failed\n` +
-        `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `❌ Delegation Format Error\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `The payment policy structure is invalid.\n\n` +
+        `Ensure:\n` +
+        `• max_amount_per_tx is positive\n` +
+        `• ttl_seconds is set\n` +
+        `• assets array contains valid tokens`;
+    } else if (errorMsg.includes("agent") || errorMsg.includes("not registered")) {
+      userFriendlyError = 
+        `❌ Agent Not Found\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
         `Error: ${errorMsg}\n\n` +
         `Troubleshooting:\n` +
         `1. Check agent registration: /debug-runtime\n` +
@@ -1414,7 +1619,6 @@ export async function handleSessionCreate(
         `3. Try again`;
     }
     
-    logger.error({ userId, error: errorMsg, sanitized: userFriendlyError }, "telemetry: session creation failed");
     return { success: false, output: userFriendlyError };
   }
 }
@@ -1499,53 +1703,100 @@ export async function handleSessionStatus(userId: number, requestId: string): Pr
     return { success: false, output: "Usage: /session-status <request-id>" };
   }
 
+  const sanitizedRequestId = requestId.trim();
   const startTime = Date.now();
   try {
+    // Per SKILL.md session-example.json: use --wait flag to poll until approved/rejected
     const output = await executeKpass(
       userId,
-      ["agent:session", "status", "--request-id", requestId, "--output", "json"],
+      ["agent:session", "status", "--request-id", sanitizedRequestId, "--wait", "--output", "json"],
       "session-status"
     );
 
-    logger.info({ userId, requestId, durationMs: Date.now() - startTime }, "telemetry: session approval status checked");
+    logger.info({ userId, requestId: sanitizedRequestId, durationMs: Date.now() - startTime }, "telemetry: session approval status checked");
 
     try {
       const response = JSON.parse(output);
       const sessionStatus = response.status || "unknown";
-      const sessionId = response.session_id || "pending";
+      const sessionId = response.session_id || response.sessionId || "pending";
 
-      if (sessionStatus === "approved") {
+      if (sessionStatus === "approved" || sessionStatus === "active") {
         return {
           success: true,
           output:
-            `✅ Session Approved!\n` +
-            `━━━━━━━━━━━━━━━━\n` +
+            `✅ <b>Session Approved!</b>\n` +
+            `━━━━━━━━━━━━━━━━━━━━\n` +
             `Session ID: ${sessionId}\n` +
-            `Status: Active\n` +
-            `\nUse this session with: /session-use ${sessionId}`,
+            `Status: ACTIVE\n\n` +
+            `Ready to use for payments. Execute with:\n` +
+            `<code>/x402-execute <url></code>`,
         };
       } else if (sessionStatus === "rejected") {
         return {
+          success: false,
+          output: 
+            `❌ <b>Session Request Rejected</b>\n` +
+            `━━━━━━━━━━━━━━━━━━━━\n` +
+            `Reason: ${response.reason || "No reason provided"}\n\n` +
+            `Create a new session with:\n` +
+            `<code>/session-create <amount> <ttl></code>`,
+        };
+      } else if (sessionStatus === "human_action_required" || sessionStatus === "pending") {
+        return {
           success: true,
-          output: `❌ Session Request Rejected.\nReason: ${response.reason || "No reason provided"}\n\nCreate a new one with: /session-create`,
+          output:
+            `⏳ <b>Session Request Pending</b>\n` +
+            `━━━━━━━━━━━━━━━━━━━━\n` +
+            `Request ID: ${sanitizedRequestId}\n` +
+            `Status: PENDING APPROVAL\n\n` +
+            `📍 If you received an approval link, visit it to approve.\n` +
+            `⏱️ Check again in a moment or wait for app notification.`,
         };
       } else {
         return {
           success: true,
           output:
-            `⏳ Session Request Pending\n` +
-            `━━━━━━━━━━━━━━━━━\n` +
-            `Request ID: ${requestId}\n` +
-            `Status: ${sessionStatus}\n` +
-            `\nCheck again in a moment.`,
+            `⏳ <b>Session Status</b>\n` +
+            `━━━━━━━━━━━━━━━━━━━━\n` +
+            `Request ID: ${sanitizedRequestId}\n` +
+            `Status: ${sessionStatus}\n\n` +
+            `Check again in a moment.`,
         };
       }
-    } catch {
-      return { success: true, output };
+    } catch (parseError) {
+      logger.warn({ userId, parseError, output }, "Failed to parse session status response");
+      return { 
+        success: true, 
+        output: `Session status response:\n\n<pre>${output.substring(0, 500)}</pre>` 
+      };
     }
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    logger.error({ userId, requestId, error: errorMsg }, "telemetry: session status check failed");
+    logger.error({ userId, requestId: sanitizedRequestId, error: errorMsg, durationMs: Date.now() - startTime }, "telemetry: session status check failed");
+    
+    // Map kpass error codes per SKILL.md
+    if (errorMsg.includes("code 4") || errorMsg.includes("not found")) {
+      return {
+        success: false,
+        output:
+          `❌ <b>Request Not Found</b>\n` +
+          `━━━━━━━━━━━━━━━━━━━━\n` +
+          `Request ID: ${sanitizedRequestId}\n\n` +
+          `Possible causes:\n` +
+          `• Request ID is incorrect\n` +
+          `• Request has expired\n\n` +
+          `Create a new session with:\n` +
+          `<code>/session-create <amount> <ttl></code>`,
+      };
+    }
+    
+    if (errorMsg.includes("code 3") || errorMsg.includes("Auth")) {
+      return {
+        success: false,
+        output: "❌ Authentication error. Please run /login first.",
+      };
+    }
+
     return { success: false, output: `Status check failed: ${errorMsg}` };
   }
 }
@@ -1628,8 +1879,8 @@ export async function handleSessionExecute(
   try {
     const args = ["agent:session", "execute", "--url", url, "--output", "json"];
 
-    const method_upper = (method && method.trim()) ? method.toUpperCase() : "GET";
-    if (method_upper !== "GET") {
+    const method_upper = (method && method.trim()) ? method.toUpperCase() : "POST";
+    if (method_upper !== "POST") {
       args.push("--method", method_upper);
     }
 
@@ -1644,7 +1895,7 @@ export async function handleSessionExecute(
     const output = await executeKpass(userId, args, "session-execute");
 
     logger.info(
-      { userId, url, method: method || "GET", durationMs: Date.now() - startTime },
+      { userId, url, method: method || "POST", durationMs: Date.now() - startTime },
       "telemetry: x402 payment executed"
     );
 
@@ -2838,16 +3089,47 @@ export async function handleBuyData(
 
 /**
  * Create a recurring auto-topup agent
- * Usage: /auto-topup <amount-NGN> <frequency> <provider>
- * Example: /auto-topup 2000 weekly MTN
+ * MANDATORY: Requires active spending session (passed via --session-id)
+ * 
+ * Usage: /auto-topup <amount-NGN> <frequency> <provider> --session-id <SESSION_ID>
+ * Example: /auto-topup 3000 1hour MTN --session-id sess_abc123
+ * 
+ * Frequencies: 1hour, 2hours, 4hours, daily, every-6-hours, etc.
+ * The session must be active and will be validated before each topup
  */
-export async function handleAutoTopup(userId: number, amountStr: string, frequency: string, providerCode: string): Promise<CommandResult> {
+export async function handleAutoTopup(
+  userId: number,
+  amountStr: string,
+  frequency: string,
+  providerCode: string,
+  sessionId?: string
+): Promise<CommandResult> {
   if (!isCommandAllowed("auto-topup")) {
     return { success: false, output: "Auto-topup is not allowed by policy." };
   }
 
   if (!amountStr || !frequency || !providerCode) {
-    return { success: false, output: "❌ Usage: /auto-topup <amount-NGN> <frequency> <provider>" };
+    return {
+      success: false,
+      output: `❌ Usage: /auto-topup <amount-NGN> <frequency> <provider> --session-id <ID>\n\n` +
+              `Examples:\n` +
+              `• /auto-topup 3000 1hour MTN --session-id sess_abc123\n` +
+              `• /auto-topup 2000 daily GLO --session-id sess_abc123\n\n` +
+              `💡 Tip: Use /request-session first to create a session`,
+    };
+  }
+
+  // CRITICAL: Require session ID
+  if (!sessionId) {
+    return {
+      success: false,
+      output: `❌ MANDATORY: Active spending session required for auto-topup.\n\n` +
+              `Steps:\n` +
+              `1. Run /request-session to create a session\n` +
+              `2. Approve it with your passkey\n` +
+              `3. Run: /auto-topup ${amountStr} ${frequency} ${providerCode} --session-id <SESSION_ID>\n\n` +
+              `This ensures budget is enforced for recurring charges.`,
+    };
   }
 
   const amountNGN = parseInt(String(amountStr), 10);
@@ -2870,22 +3152,33 @@ export async function handleAutoTopup(userId: number, amountStr: string, frequen
 
     const parsed = scheduler.parseScheduleDescription(String(frequency || "every hour"));
     if (!parsed || !parsed.type) {
-      return { success: false, output: "❌ Invalid frequency format. Use 'daily', 'weekly', or 'every <n> hours'." };
+      return {
+        success: false,
+        output: `❌ Invalid frequency format.\n\n` +
+                `Supported: 1hour, 2hours, 4hours, 6hours, daily, weekly\n` +
+                `Examples: "1hour", "every-2-hours", "daily", "weekly"`,
+      };
     }
 
     const scheduleType = parsed.type;
     const schedule = parsed.type === "cron" ? String(parsed.cron || "") : `every_${parsed.interval}`;
     const intervalSecs = parsed.type === "interval" && typeof parsed.interval === "number" ? parsed.interval : undefined;
 
+    // Get user's phone number for topup target
+    const profile = readUserProfile(userId, config.userDataRoot);
+    const phoneNumber = profile?.contact?.phone || profile?.phone || "unknown";
+
     const agent = storage.createAgent(userId, {
-      name: `auto-topup-${provider}-${amountNGN}`,
-      goal: `Auto top-up ${amountNGN} NGN ${provider} as recurring ${frequency}`,
+      name: `auto-topup-${provider}-${amountNGN}-${Date.now()}`,
+      goal: `Auto top-up ${amountNGN} NGN ${provider} every ${frequency}`,
       userId: userId,
       command: "commerce",
       commandArgs: {
-        type: "data",
+        type: "airtime",
         amountNGN: String(amountNGN),
         provider: provider,
+        phoneNumber: phoneNumber,
+        sessionId: sessionId,
       },
       schedule,
       scheduleType: scheduleType,
@@ -2895,7 +3188,7 @@ export async function handleAutoTopup(userId: number, amountStr: string, frequen
       maxRetries: 3,
       timeoutSeconds: 60,
       spendingLimitCents: amountNGN * 100,
-      activeSessionId: undefined,
+      activeSessionId: sessionId,
     });
 
     if (!agent || !agent.id) {
@@ -2910,23 +3203,75 @@ export async function handleAutoTopup(userId: number, amountStr: string, frequen
       logger.warn({ userId, error: calcError }, "failed to calculate next run");
     }
 
-    const agentName = String(agent.name || "unknown").substring(0, 100);
-    const agentId = String(agent.id || "unknown").substring(0, 50);
-    return { success: true, output: `✅ Auto-topup scheduled: ${agentName} (id: ${agentId})` };
+    const agentId = String(agent.id || "unknown").substring(0, 16);
+    const frequencyDisplay = String(frequency).replace(/[-_]/g, " ").toLowerCase();
+
+    logger.info(
+      { userId, sessionId, amountNGN, provider, frequency, agentId },
+      "telemetry: auto-topup created with session"
+    );
+
+    return {
+      success: true,
+      output:
+        `✅ Auto-Topup Scheduled\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n` +
+        `📱 Provider: ${provider}\n` +
+        `💰 Amount: ₦${amountNGN.toLocaleString()}\n` +
+        `⏰ Frequency: Every ${frequencyDisplay}\n` +
+        `📋 Job ID: \`${agentId}\`\n\n` +
+        `🔒 Session: \`${sessionId}\`\n` +
+        `📞 Target: ${phoneNumber}\n\n` +
+        `To manage:\n` +
+        `• /scheduled-jobs - View all scheduled topups\n` +
+        `• /stop-topup ${agentId} - Cancel this topup\n` +
+        `• /pause-topup ${agentId} - Pause temporarily`,
+    };
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    logger.error({ userId, error: errorMsg }, "auto-topup creation failed");
+    logger.error({ userId, sessionId, error: errorMsg }, "auto-topup creation failed");
     return { success: false, output: `❌ Failed to create auto-topup: ${errorMsg}` };
   }
 }
 
 /**
  * Schedule one-off or recurring airtime purchases
- * Usage: /schedule-airtime <amount-NGN> <frequency> <provider>
+ * MANDATORY: Requires active spending session
+ * 
+ * Usage: /schedule-airtime <amount-NGN> <frequency> <provider> --session-id <SESSION_ID>
+ * Example: /schedule-airtime 2000 daily GLO --session-id sess_abc123
  */
-export async function handleScheduleAirtime(userId: number, amountStr: string, frequency: string, providerCode: string): Promise<CommandResult> {
+export async function handleScheduleAirtime(
+  userId: number,
+  amountStr: string,
+  frequency: string,
+  providerCode: string,
+  sessionId?: string
+): Promise<CommandResult> {
   if (!isCommandAllowed("schedule-airtime")) {
     return { success: false, output: "Scheduling airtime is not allowed by policy." };
+  }
+
+  if (!amountStr || !frequency || !providerCode) {
+    return {
+      success: false,
+      output: `❌ Usage: /schedule-airtime <amount-NGN> <frequency> <provider> --session-id <ID>\n\n` +
+              `Examples:\n` +
+              `• /schedule-airtime 2000 daily GLO --session-id sess_abc123\n` +
+              `• /schedule-airtime 5000 weekly AIRTEL --session-id sess_abc123`,
+    };
+  }
+
+  // CRITICAL: Require session ID
+  if (!sessionId) {
+    return {
+      success: false,
+      output: `❌ MANDATORY: Active spending session required.\n\n` +
+              `Steps:\n` +
+              `1. Run /request-session to create a session\n` +
+              `2. Approve it with your passkey\n` +
+              `3. Run: /schedule-airtime ${amountStr} ${frequency} ${providerCode} --session-id <SESSION_ID>`,
+    };
   }
 
   const amountNGN = parseInt(amountStr, 10);
@@ -2947,8 +3292,12 @@ export async function handleScheduleAirtime(userId: number, amountStr: string, f
     const scheduleType = parsed.type;
     const schedule = parsed.type === "cron" ? (parsed.cron as string) : `every_${parsed.interval}`;
 
+    // Get user's phone number for topup target
+    const profile = readUserProfile(userId, config.userDataRoot);
+    const phoneNumber = profile?.contact?.phone || "unknown";
+
     const agent = storage.createAgent(userId, {
-      name: `schedule-airtime-${provider}-${amountNGN}`,
+      name: `schedule-airtime-${provider}-${amountNGN}-${Date.now()}`,
       goal: `Scheduled airtime ${amountNGN} NGN to self on ${frequency}`,
       userId: userId,
       command: "commerce",
@@ -2956,6 +3305,8 @@ export async function handleScheduleAirtime(userId: number, amountStr: string, f
         type: "airtime",
         amountNGN: String(amountNGN),
         provider: provider,
+        phoneNumber: phoneNumber,
+        sessionId: sessionId,
       },
       schedule,
       scheduleType,
@@ -2965,7 +3316,7 @@ export async function handleScheduleAirtime(userId: number, amountStr: string, f
       maxRetries: 3,
       timeoutSeconds: 60,
       spendingLimitCents: amountNGN * 100,
-      activeSessionId: undefined,
+      activeSessionId: sessionId,
     });
 
     try {
@@ -2974,11 +3325,233 @@ export async function handleScheduleAirtime(userId: number, amountStr: string, f
       // ignore
     }
 
-    return { success: true, output: `✅ Airtime scheduled: ${agent.name} (id: ${agent.id})` };
+    const agentId = String(agent.id || "unknown").substring(0, 16);
+    const frequencyDisplay = String(frequency).replace(/[-_]/g, " ").toLowerCase();
+
+    logger.info(
+      { userId, sessionId, amountNGN, provider, frequency, agentId },
+      "telemetry: schedule-airtime created with session"
+    );
+
+    return {
+      success: true,
+      output:
+        `✅ Airtime Scheduled\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `📱 Provider: ${provider}\n` +
+        `💰 Amount: ₦${amountNGN.toLocaleString()}\n` +
+        `⏰ Frequency: ${frequencyDisplay}\n` +
+        `📋 Job ID: \`${agentId}\`\n\n` +
+        `🔒 Session: \`${sessionId}\`\n` +
+        `📞 Target: ${phoneNumber}\n\n` +
+        `To manage:\n` +
+        `• /scheduled-jobs - View all scheduled purchases\n` +
+        `• /stop-topup ${agentId} - Cancel this schedule\n` +
+        `• /pause-topup ${agentId} - Pause temporarily`,
+    };
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    logger.error({ userId, error: errorMsg }, "schedule-airtime creation failed");
+    logger.error({ userId, sessionId, error: errorMsg }, "schedule-airtime creation failed");
     return { success: false, output: `❌ Failed to schedule airtime: ${errorMsg}` };
+  }
+}
+
+/**
+ * List all scheduled jobs (auto-topups and scheduled purchases)
+ * Usage: /scheduled-jobs
+ */
+export async function handleScheduledJobs(userId: number): Promise<CommandResult> {
+  if (!isCommandAllowed("scheduled-jobs")) {
+    return { success: false, output: "Viewing scheduled jobs is not allowed." };
+  }
+
+  try {
+    const storage = getAgentStorage();
+    if (!storage) {
+      return { success: false, output: "❌ Agent storage not available." };
+    }
+
+    const agents = storage.listAgentsByUser(userId);
+    const scheduledAgents = agents.filter((agent: any) => 
+      agent.command === "commerce" && (agent.enabled === true || agent.enabled === undefined)
+    );
+
+    if (scheduledAgents.length === 0) {
+      return {
+        success: true,
+        output: `📋 No scheduled topups yet.\n\nCreate one with:\n/auto-topup <amount> <frequency> <provider> --session-id <ID>`,
+      };
+    }
+
+    let output = `📋 Scheduled Topups (${scheduledAgents.length})\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+    scheduledAgents.forEach((agent: any, idx: number) => {
+      const agentId = String(agent.id || "").substring(0, 16);
+      const agentName = String(agent.name || "unknown").substring(0, 50);
+      const status = agent.enabled === false ? "⏸️ PAUSED" : "✅ ACTIVE";
+      const amount = agent.commandArgs?.amountNGN || "?";
+      const provider = agent.commandArgs?.provider || "?";
+      const schedule = agent.schedule || agent.intervalSeconds ? `${agent.schedule || agent.intervalSeconds}s` : "?";
+      const sessionId = agent.activeSessionId || "?";
+
+      output += `${idx + 1}. ${status} \`${agentId}\`\n`;
+      output += `   ${provider} - ₦${amount}\n`;
+      output += `   Schedule: ${schedule}\n`;
+      output += `   Session: \`${sessionId.substring(0, 12)}\`\n`;
+      output += `   Name: ${agentName}\n\n`;
+    });
+
+    output += `Commands:\n`;
+    output += `• /stop-topup <job-id> - Cancel a topup\n`;
+    output += `• /pause-topup <job-id> - Pause temporarily\n`;
+    output += `• /resume-topup <job-id> - Resume paused topup`;
+
+    logger.info({ userId, jobCount: scheduledAgents.length }, "telemetry: scheduled jobs listed");
+
+    return { success: true, output };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, error: errorMsg }, "scheduled-jobs list failed");
+    return { success: false, output: `❌ Failed to list jobs: ${errorMsg}` };
+  }
+}
+
+/**
+ * Stop (cancel) a scheduled topup job
+ * Usage: /stop-topup <job-id>
+ */
+export async function handleStopTopup(userId: number, jobId: string): Promise<CommandResult> {
+  if (!isCommandAllowed("stop-topup")) {
+    return { success: false, output: "Stopping topups is not allowed." };
+  }
+
+  if (!jobId || !jobId.trim()) {
+    return { success: false, output: "Usage: /stop-topup <job-id>" };
+  }
+
+  try {
+    const storage = getAgentStorage();
+    if (!storage) {
+      return { success: false, output: "❌ Agent storage not available." };
+    }
+
+    const agents = storage.listAgentsByUser(userId);
+    const agent = agents.find((a: any) => String(a.id || "").startsWith(jobId.trim()));
+
+    if (!agent) {
+      return { success: false, output: `❌ Job not found: ${jobId}` };
+    }
+
+    // Delete the agent
+    storage.deleteAgent(agent.id);
+
+    const agentId = String(agent.id || "").substring(0, 16);
+    logger.info({ userId, agentId }, "telemetry: topup job stopped");
+
+    return {
+      success: true,
+      output: `✅ Topup job cancelled\n\nJob: \`${agentId}\`\nProvider: ${agent.commandArgs?.provider || "?"}\nAmount: ₦${agent.commandArgs?.amountNGN || "?"}`,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, jobId, error: errorMsg }, "stop-topup failed");
+    return { success: false, output: `❌ Failed to stop topup: ${errorMsg}` };
+  }
+}
+
+/**
+ * Pause a scheduled topup (disable without deleting)
+ * Usage: /pause-topup <job-id>
+ */
+export async function handlePauseTopup(userId: number, jobId: string): Promise<CommandResult> {
+  if (!isCommandAllowed("pause-topup")) {
+    return { success: false, output: "Pausing topups is not allowed." };
+  }
+
+  if (!jobId || !jobId.trim()) {
+    return { success: false, output: "Usage: /pause-topup <job-id>" };
+  }
+
+  try {
+    const storage = getAgentStorage();
+    if (!storage) {
+      return { success: false, output: "❌ Agent storage not available." };
+    }
+
+    const agents = storage.listAgentsByUser(userId);
+    const agent = agents.find((a: any) => String(a.id || "").startsWith(jobId.trim()));
+
+    if (!agent) {
+      return { success: false, output: `❌ Job not found: ${jobId}` };
+    }
+
+    // Update agent to disabled
+    const updated = storage.updateAgent(agent.id, { enabled: false });
+    if (!updated) {
+      return { success: false, output: `❌ Failed to pause job` };
+    }
+
+    const agentId = String(agent.id || "").substring(0, 16);
+    logger.info({ userId, agentId }, "telemetry: topup job paused");
+
+    return {
+      success: true,
+      output: `⏸️ Topup job paused\n\nJob: \`${agentId}\`\nUse /resume-topup ${agentId.substring(0, 8)} to resume`,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, jobId, error: errorMsg }, "pause-topup failed");
+    return { success: false, output: `❌ Failed to pause topup: ${errorMsg}` };
+  }
+}
+
+/**
+ * Resume a paused topup
+ * Usage: /resume-topup <job-id>
+ */
+export async function handleResumeTopup(userId: number, jobId: string): Promise<CommandResult> {
+  if (!isCommandAllowed("resume-topup")) {
+    return { success: false, output: "Resuming topups is not allowed." };
+  }
+
+  if (!jobId || !jobId.trim()) {
+    return { success: false, output: "Usage: /resume-topup <job-id>" };
+  }
+
+  try {
+    const storage = getAgentStorage();
+    if (!storage) {
+      return { success: false, output: "❌ Agent storage not available." };
+    }
+
+    const agents = storage.listAgentsByUser(userId);
+    const agent = agents.find((a: any) => String(a.id || "").startsWith(jobId.trim()));
+
+    if (!agent) {
+      return { success: false, output: `❌ Job not found: ${jobId}` };
+    }
+
+    if (agent.enabled !== false) {
+      return { success: false, output: `ℹ️ Job is already active` };
+    }
+
+    // Update agent to enabled
+    const updated = storage.updateAgent(agent.id, { enabled: true });
+    if (!updated) {
+      return { success: false, output: `❌ Failed to resume job` };
+    }
+
+    const agentId = String(agent.id || "").substring(0, 16);
+    logger.info({ userId, agentId }, "telemetry: topup job resumed");
+
+    return {
+      success: true,
+      output: `▶️ Topup job resumed\n\nJob: \`${agentId}\`\nProvider: ${agent.commandArgs?.provider || "?"}\nAmount: ₦${agent.commandArgs?.amountNGN || "?"}`,
+    };
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ userId, jobId, error: errorMsg }, "resume-topup failed");
+    return { success: false, output: `❌ Failed to resume topup: ${errorMsg}` };
   }
 }
 

@@ -36,7 +36,7 @@ export interface X402ExecuteInput {
 /**
  * Execute paid HTTP request through active spending session
  *
- * Safety checks:
+ * Safety checks per SKILL.md form-session-delegation:
  * 1. Rate limit check
  * 2. Validate URL format
  * 3. Check authentication
@@ -44,9 +44,11 @@ export interface X402ExecuteInput {
  * 5. Confirmation check if amount exceeds threshold
  * 6. Validate session is active
  * 7. Validate HTTP method
- * 8. Execute request
- * 9. Log transaction
- * 10. Record in history
+ * 8. OPTIONAL: Preflight 402 discovery
+ * 9. Execute request with x402 payment
+ * 10. Log transaction
+ * 11. Record in history
+ * 12. Update budget
  */
 export async function x402ExecuteSkill(input: X402ExecuteInput): Promise<SkillExecutionOutput> {
   const startTime = Date.now();
@@ -71,7 +73,7 @@ export async function x402ExecuteSkill(input: X402ExecuteInput): Promise<SkillEx
     }
 
     // 3. Validate method
-    const method = input.method || "GET";
+    const method = input.method || "POST";
     if (!["GET", "POST", "PUT", "DELETE", "PATCH"].includes(method)) {
       return {
         success: false,
@@ -90,11 +92,35 @@ export async function x402ExecuteSkill(input: X402ExecuteInput): Promise<SkillEx
       };
     }
 
-    // 5. Estimate payment amount (USD equivalent) - typically $0.10-$10 per API call
-    // Default to $1 if not specified
-    const estimatedCost = 1.0;
+    // 5. PREFLIGHT 402 DISCOVERY (optional per SKILL.md Step 1)
+    // Try to discover payment requirements from merchant
+    let discoveredPayment: { amount: string; asset: string; network?: string } | null = null;
+    try {
+      discoveredPayment = await performPreflight402Discovery(input.url, method, input.body);
+      if (discoveredPayment) {
+        logger.info(
+          {
+            userId: input.userId,
+            url: input.url,
+            discovered: discoveredPayment,
+            durationMs: Date.now() - startTime
+          },
+          "skill:x402Execute preflight 402 discovery successful"
+        );
+      }
+    } catch (preflight_error) {
+      // Preflight is optional - continue without it per SKILL.md
+      logger.debug(
+        { userId: input.userId, url: input.url, error: preflight_error },
+        "skill:x402Execute preflight 402 discovery skipped or failed"
+      );
+    }
 
-    // 6. Budget check
+    // 6. Estimate payment amount (use discovery or default)
+    // Typically $0.10-$10 per API call, default $1
+    const estimatedCost = discoveredPayment ? parseFloat(discoveredPayment.amount) : 1.0;
+
+    // 7. Budget check
     const budgetCheck = await checkBudget(input.userId, estimatedCost, "USD");
     if (!budgetCheck.allowed) {
       return {
@@ -104,23 +130,22 @@ export async function x402ExecuteSkill(input: X402ExecuteInput): Promise<SkillEx
       };
     }
 
-    // 7. Check if confirmation is required
+    // 8. Check if confirmation is required
     if (requiresConfirmation("payment", estimatedCost)) {
       try {
         const challenge = await createConfirmationChallenge(
           input.userId,
           "payment",
           estimatedCost,
-          "USD",
+          discoveredPayment?.asset || "USDC",
           `API call to ${new URL(input.url).hostname}`,
           undefined,
           input.url
         );
         
-        // Cleaned copy-paste emoji artifact and formatted output text parameters safely
         return {
           success: false,
-          output: `⚠️ *Confirmation Required*\n\nThis call requires an API micro-payment\. Please enter:\n\`/verify <code>\`\n\nYour confirmation code has been sent separately\.`,
+          output: `⚠️ *Confirmation Required*\n\nThis call requires an API micro-payment of ${estimatedCost} ${discoveredPayment?.asset || "USDC"}\.\n\nPlease enter:\n\`/verify <code>\`\n\nYour confirmation code has been sent separately\.`,
           rawData: { confirmationId: challenge.id, requiresConfirmation: true },
           exitCode: KiteExitCode.USAGE_ERROR,
         };
@@ -130,24 +155,28 @@ export async function x402ExecuteSkill(input: X402ExecuteInput): Promise<SkillEx
       }
     }
 
-    // 8. Record transaction as pending
+    // 9. Record transaction as pending
     const transaction = await recordTransaction(input.userId, {
       type: "payment",
       amount: estimatedCost,
-      currency: "USD",
+      currency: discoveredPayment?.asset || "USDC",
       serviceId: input.url,
       description: `API call to ${new URL(input.url).hostname}`,
       status: "pending",
     });
 
-    // 9. Build kpass command
+    // 10. Build kpass command with proper x402 execution
     const args: string[] = [
       "agent:session",
       "execute",
       "--url", input.url,
-      "--method", method,
       "--output", "json",
     ];
+
+    // Only add --method if different from default (POST)
+    if (method !== "POST") {
+      args.splice(args.indexOf("--output"), 0, "--method", method);
+    }
 
     // Add headers if provided
     if (input.headers && Object.keys(input.headers).length > 0) {
@@ -164,46 +193,50 @@ export async function x402ExecuteSkill(input: X402ExecuteInput): Promise<SkillEx
       args.push("--session-id", input.sessionId);
     }
 
-    // 10. Execute request
+    // 11. Execute request with x402 payment through session
     const output = await executeKpass(input.userId, args, "x402-execute");
     let responseData: Record<string, unknown> = {};
     let txHash = "";
     try {
       responseData = JSON.parse(output);
-      txHash = (responseData.txHash || responseData.tx_hash || "") as string;
+      txHash = (responseData.txHash || responseData.tx_hash || responseData.hash || "") as string;
     } catch {
       // Continue even if parse fails
     }
 
-    // 11. Update transaction as completed
+    // 12. Update transaction as completed
     await updateTransactionStatus(input.userId, transaction.id, "completed", {
       txHash,
       status: "completed",
+      // paymentAsset: discoveredPayment?.asset || "USDC",
+      amount: estimatedCost,
     });
 
-    // 12. Deduct from budget
+    // 13. Deduct from budget
     await deductFromBudget(input.userId, estimatedCost);
 
-    // 13. Log telemetry
+    // 14. Log telemetry
     logger.info(
       {
         userId: input.userId,
         url: input.url,
         method,
         cost: estimatedCost,
+        asset: discoveredPayment?.asset || "USDC",
         txHash,
         durationMs: Date.now() - startTime,
       },
       "skill:x402Execute succeeded"
     );
 
-    // Wrapped response components safely in structured layout grids
+    // Build success message
     let message = `*✅ Request Executed Successfully*\n`;
     message += `\`\`\`\n`;
-    message += `Method: ${method}\n`;
-    message += `Target: ${new URL(input.url).hostname}\n`;
+    message += `Method:   ${method}\n`;
+    message += `Target:   ${new URL(input.url).hostname}\n`;
+    message += `Cost:     ${estimatedCost} ${discoveredPayment?.asset || "USDC"}\n`;
     if (txHash) {
-      message += `Hash:   ${txHash}\n`;
+      message += `TX Hash:  ${txHash.substring(0, 16)}…\n`;
     }
     message += `\`\`\``;
 
@@ -225,7 +258,7 @@ export async function x402ExecuteSkill(input: X402ExecuteInput): Promise<SkillEx
       "skill:x402Execute failed"
     );
 
-    // Map common errors safely escaping structural strings from parsing disruptions
+    // Map kpass error codes to user-friendly messages per SKILL.md
     if (errorMsg.includes("code 3")) {
       return {
         success: false,
@@ -247,6 +280,20 @@ export async function x402ExecuteSkill(input: X402ExecuteInput): Promise<SkillEx
         exitCode: KiteExitCode.USAGE_ERROR,
       };
     }
+    if (errorMsg.includes("402") || errorMsg.includes("payment required")) {
+      return {
+        success: false,
+        output: "❌ Payment required by merchant\. Ensure your session has sufficient budget\.",
+        exitCode: KiteExitCode.USAGE_ERROR,
+      };
+    }
+    if (errorMsg.includes("401") || errorMsg.includes("unauthorized")) {
+      return {
+        success: false,
+        output: "❌ Merchant endpoint requires authentication\.",
+        exitCode: KiteExitCode.AUTH_ERROR,
+      };
+    }
 
     const safeErrorMsg = errorMsg.replace(/[._\-!]/g, '\\$&');
     return {
@@ -255,6 +302,31 @@ export async function x402ExecuteSkill(input: X402ExecuteInput): Promise<SkillEx
       error: errorMsg,
       exitCode: KiteExitCode.NETWORK_ERROR,
     };
+  }
+}
+
+/**
+ * Perform preflight 402 discovery per SKILL.md Step 1
+ * Tries to discover payment requirements from merchant 402 response
+ * Returns null if discovery fails (optional per SKILL.md)
+ */
+async function performPreflight402Discovery(
+  url: string,
+  method: string,
+  body?: Record<string, unknown>
+): Promise<{ amount: string; asset: string; network?: string } | null> {
+  try {
+    // Use a simple curl-like request to discover 402 payment requirements
+    // This is a simplified version - full implementation would use proper HTTP client
+    
+    logger.debug({ url, method }, "x402Execute: attempting 402 preflight discovery");
+    
+    // For now, return null (discovery skipped)
+    // In production, this would make an actual HTTP request and parse 402 response
+    return null;
+  } catch (error) {
+    // Preflight is optional - swallow errors
+    return null;
   }
 }
 

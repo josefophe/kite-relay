@@ -120,7 +120,51 @@ docker compose up --build
 
 ---
 
-## 📖 Documentation by Audience
+## � User Documentation Hub
+
+**New to KiteRelay?** Start here for the best experience:
+
+| Document | For Whom | Time |
+|----------|----------|------|
+| **[GETTING_STARTED.md](./GETTING_STARTED.md)** | First-time users | 5 min |
+| **[COMMANDS_REFERENCE.md](./COMMANDS_REFERENCE.md)** | Need command list | Quick ref |
+| **[FEATURES_OVERVIEW.md](./FEATURES_OVERVIEW.md)** | Exploring capabilities | 15 min |
+| **[USER_GUIDE.md](./USER_GUIDE.md)** | Step-by-step walkthroughs | 30 min |
+| **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)** | Having issues? | As needed |
+
+### Documentation Hierarchy
+
+```
+📍 You are here (Technical README)
+│
+├─ 🆕 NEW: User Guides (above table) ← START HERE
+│  ├─ GETTING_STARTED.md (5 min orientation)
+│  ├─ COMMANDS_REFERENCE.md (All commands)
+│  ├─ FEATURES_OVERVIEW.md (What you can do)
+│  ├─ USER_GUIDE.md (How to do it)
+│  └─ TROUBLESHOOTING.md (If something breaks)
+│
+└─ 📖 Developer/Architecture Docs (below)
+   ├─ PHASE5_DEMO.md (Feature showcase)
+   ├─ PHASE4_ARCHITECTURE.md (Technical deep dive)
+   ├─ Docs/AI-md/ (AI orchestration)
+   └─ Docs/2-md/ (Scheduling engine)
+```
+
+### Quick Links from Telegram
+
+Users can access help directly:
+```
+/help               # General help & commands
+/help commands      # All available commands
+/help <topic>       # Topic-specific help
+/start              # Onboarding tutorial
+/tutorial full      # 60-minute complete walkthrough
+```
+
+---
+
+## �📖 Documentation by Audience
 
 ### **Understanding the Problem & Solution**
 
@@ -148,8 +192,7 @@ See **[ABOUT_HACKATHON.md](./About-hackathon.md)** for full context.
 
 ### **For Operations & Deployment**
 
-- **Docker Compose for Linux/wsl2** (`docker-compose.yml`) — Full stack with Redis, SQLite, relay + workers
-- **Docker Compose for mac users** [docker-compose-mac](./Docs/docker-compose-mac.txt) — Copy and paste this to your (`docker-compose.yml`)
+- **Docker Compose** (`docker-compose.yml`) — Full stack with Redis, SQLite, relay + workers
 - **Health checks** — `/health` endpoint available at `http://localhost:3000/health`
 - **Logs** — Pino JSON logging to stdout; structured for observability
 

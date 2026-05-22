@@ -25,6 +25,7 @@ interface ExecutionOptions {
   bin: string;
   userId: number;
   command: string;
+  envVars?: Record<string, string>;
 }
 
 // Per-user execution queue ensures serialization
@@ -58,7 +59,7 @@ function writeExecutionLog(paths: UserPaths, entry: string): void {
  * - XDG variables ensure config/data isolation
  * - TMPDIR is user-specific
  */
-function buildUserEnvironment(paths: UserPaths): NodeJS.ProcessEnv {
+function buildUserEnvironment(paths: UserPaths, customEnv?: Record<string, string>): NodeJS.ProcessEnv {
   return {
     ...process.env,
     // HOME determines where kpass looks for .kpass/config.json
@@ -78,6 +79,10 @@ function buildUserEnvironment(paths: UserPaths): NodeJS.ProcessEnv {
     
     // Optional: Mark this as being run in kite-relay for debugging
     KITE_USER_ID: paths.root,
+    
+    // Merge custom environment variables (e.g., KPASS_SIGNUP_CODE, KPASS_LOGIN_CODE)
+    // These are sensitive values passed via env vars for security (not visible in ps)
+    ...(customEnv || {}),
   };
 }
 
@@ -93,7 +98,7 @@ function buildUserEnvironment(paths: UserPaths): NodeJS.ProcessEnv {
  */
 async function runSubprocess(opts: ExecutionOptions): Promise<string> {
   const paths = ensureUserPaths(opts.userId, config.userDataRoot);
-  const userEnv = buildUserEnvironment(paths);
+  const userEnv = buildUserEnvironment(paths, opts.envVars);
 
   logger.debug(
     { userId: opts.userId, command: opts.command, args: opts.args, HOME: userEnv.HOME },
@@ -177,8 +182,12 @@ async function runSubprocess(opts: ExecutionOptions): Promise<string> {
  * - No concurrent CLI conflicts
  * - Sequential auth operations
  * - Safe concurrent balance queries across users
+ * 
+ * @param envVars Optional environment variables (e.g., KPASS_SIGNUP_CODE, KPASS_LOGIN_CODE)
+ *                  These are passed as env vars instead of CLI flags for security
+ *                  (env vars are not visible in process listings)
  */
-export async function executeKpass(userId: number, args: string[], command: string): Promise<string> {
+export async function executeKpass(userId: number, args: string[], command: string, envVars?: Record<string, string>): Promise<string> {
   return enqueue(userId, async () => {
     const paths = ensureUserPaths(userId, config.userDataRoot);
     
@@ -194,6 +203,7 @@ export async function executeKpass(userId: number, args: string[], command: stri
       args,
       userId,
       command,
+      envVars,
     });
   });
 }

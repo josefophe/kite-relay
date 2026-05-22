@@ -13,6 +13,10 @@ export interface UserProfile {
   telegramId: number;
   createdAt: string;
   lastSeenAt: string;
+  phone?: string;          // 👈 Added for the new feature
+  contact?: {               // 👈 Added for the new feature
+    phone?: string;
+  };
   identity?: {
     passportId?: string;
     walletId?: string;

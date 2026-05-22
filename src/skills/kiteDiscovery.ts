@@ -72,7 +72,7 @@ async function handleList(userId: number, limit: number = 10): Promise<SkillExec
       [
         "services",
         "list",
-        "--payment-approach", "x402_http",
+        "--payment-approach", "x402",
         "--asset", "USDC",
         "--limit", String(limit),
         "--output", "json",
@@ -147,7 +147,7 @@ async function handleSearch(
     const args = [
       "services",
       "list",
-      "--payment-approach", "x402_http",
+      "--payment-approach", "x402",
       "--asset", "USDC",
       "--query", escapedQuery,
       "--limit", String(limit),

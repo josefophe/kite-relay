@@ -79,7 +79,7 @@ Welcome to your wallet! Here's what you see:
       'Wallet address is public and safe to share',
       'Never share your private keys or JWT tokens',
       'Balances update in real-time',
-      'You can view your address with: kpass me',
+      'You can view your address with: kpass me --output json',
     ],
     dismissible: true,
   },

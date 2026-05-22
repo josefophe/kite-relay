@@ -141,7 +141,7 @@ const ONBOARDING_FLOWS: Record<string, OnboardingStep[]> = {
       stepId: 'profile-1',
       title: '👤 Check Your Profile',
       description: 'View your account information and wallet details',
-      action: 'kpass me',
+      action: 'kpass me --output json',
       expectedOutcome: 'See your user ID, wallet address, and status',
       nextStep: 'profile-2',
       tips: [
@@ -242,7 +242,7 @@ const ONBOARDING_FLOWS: Record<string, OnboardingStep[]> = {
       stepId: 'agent-3',
       title: '📊 List Your Agents',
       description: 'View all registered agents and their status',
-      action: 'kpass user agents',
+      action: 'kpass user agents --output json',
       expectedOutcome: 'List of agents with types and session status',
       tips: [
         'Shows active, expired, and pending sessions',
@@ -333,7 +333,7 @@ const ONBOARDING_FLOWS: Record<string, OnboardingStep[]> = {
       stepId: 'api-3',
       title: '💰 Make Paid Call',
       description: 'Use session to call paid API (x402 protocol)',
-      action: 'kpass agent:session execute --url <api-url> --method GET',
+      action: 'kpass agent:session execute --url <api-url> --method GET --output json',
       expectedOutcome: 'API response + automatic payment',
       tips: [
         'Payment deducted from session budget',

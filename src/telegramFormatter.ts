@@ -8,6 +8,7 @@
  * - Next-step suggestions
  * - Error recovery guidance
  * - Transaction links
+ * - Safe escaping for multiple parse modes
  */
 
 import { TelegramResponseContext } from "./skills/skillTypes";
@@ -22,13 +23,45 @@ export interface FormattedResponse {
 /**
  * Escape HTML entities for safe Telegram HTML mode
  */
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+/**
+ * Escape text for Telegram MarkdownV2 mode
+ * 
+ * MarkdownV2 requires escaping these characters: _ * [ ] ( ) ~ ` > # + - = | { } . !
+ * CRITICAL: All user-generated content and system data must be escaped
+ * Use this for dynamic content like user IDs, error messages, or system logs
+ */
+export function escapeMarkdownV2(text: string): string {
+  // Escape all MarkdownV2 special characters
+  // Order matters: \ must be first, then others
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/_/g, "\\_")
+    .replace(/\*/g, "\\*")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)")
+    .replace(/~/g, "\\~")
+    .replace(/`/g, "\\`")
+    .replace(/>/g, "\\>")
+    .replace(/#/g, "\\#")
+    .replace(/\+/g, "\\+")
+    .replace(/-/g, "\\-")
+    .replace(/=/g, "\\=")
+    .replace(/\|/g, "\\|")
+    .replace(/\{/g, "\\{")
+    .replace(/\}/g, "\\}")
+    .replace(/\./g, "\\.")
+    .replace(/!/g, "\\!");
 }
 
 /**

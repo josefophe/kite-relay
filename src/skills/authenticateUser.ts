@@ -95,7 +95,7 @@ async function handleLogin(userId: number, email?: string): Promise<SkillExecuti
   try {
     const output = await executeKpass(
       userId,
-      ["login", "init", "--email", sanitized, "--output", "json"],
+      ["login", "init", "--email", sanitized, "--client", "agent", "--output", "json", "--no-interactive"],
       "login-init"
     );
     let loginId = "";
@@ -153,7 +153,7 @@ async function handleSignup(userId: number, email?: string): Promise<SkillExecut
   try {
     const output = await executeKpass(
       userId,
-      ["signup", "init", "--email", sanitized, "--output", "json"],
+      ["signup", "init", "--email", sanitized, "--client", "agent", "--output", "json", "--no-interactive"],
       "signup-init"
     );
     let signupId = "";
@@ -208,22 +208,20 @@ async function handleVerify(
   const sanitizedCode = code.trim();
   let command: string[];
   let commandName: string;
+  let envVars: Record<string, string> = {};
 
   if (loginId) {
-    command = ["login", "verify", "--login-id", loginId, "--code", sanitizedCode, "--output", "json"];
+    // Use KPASS_LOGIN_CODE env var instead of --code flag for security
+    // (env vars are not visible in process listings)
+    command = ["login", "verify", "--login-id", loginId, "--output", "json", "--no-interactive"];
     commandName = "login-verify";
+    envVars = { KPASS_LOGIN_CODE: sanitizedCode };
   } else if (signupId) {
-    command = [
-      "signup",
-      "exchange",
-      "--signup-id",
-      signupId,
-      "--exchange-token",
-      sanitizedCode,
-      "--output",
-      "json",
-    ];
+    // Use KPASS_SIGNUP_CODE env var instead of deprecated --exchange-token flag
+    // Per SKILL.md: "--exchange-token flag was removed; use KPASS_SIGNUP_CODE env var instead"
+    command = ["signup", "exchange", "--signup-id", signupId, "--output", "json"];
     commandName = "signup-exchange";
+    envVars = { KPASS_SIGNUP_CODE: sanitizedCode };
   } else {
     return {
       success: false,
@@ -233,7 +231,7 @@ async function handleVerify(
   }
 
   try {
-    const output = await executeKpass(userId, command, commandName);
+    const output = await executeKpass(userId, command, commandName, envVars);
     let passportId = `user_${userId}`;
     let email = "authenticated";
     let responseData: Record<string, unknown> = {};

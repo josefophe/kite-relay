@@ -195,8 +195,90 @@ async function executeAirtimeDelivery(
 }
 
 /**
+ * Validate active session and check budget availability
+ * CRITICAL: Session must be active, not expired, and have sufficient budget
+ */
+async function validateSessionBudget(
+  userId: number,
+  sessionId: string,
+  requiredAmountUSDC: number
+): Promise<{ valid: boolean; error?: string; session?: Record<string, unknown> }> {
+  try {
+    // Retrieve active sessions
+    const output = await executeKpass(
+      userId,
+      ["agent:session", "list", "--status", "active", "--output", "json"],
+      "session-list"
+    );
+
+    const result = JSON.parse(output);
+    const sessions = result.sessions || [];
+    const session = sessions.find((s: any) => s.id === sessionId);
+
+    if (!session) {
+      return {
+        valid: false,
+        error: `❌ Session not found: ${sessionId}\n\nYou may need to create and approve a session first.`,
+      };
+    }
+
+    if (session.status !== "active") {
+      return {
+        valid: false,
+        error: `❌ Session is not active. Current status: ${session.status}\n\nPlease approve the session first.`,
+      };
+    }
+
+    // Check expiration
+    const expiresAt = new Date(session.expires_at);
+    if (expiresAt < new Date()) {
+      return {
+        valid: false,
+        error: `❌ Session has expired (was valid until ${expiresAt.toISOString()})\n\nPlease create a new session.`,
+      };
+    }
+
+    // Check per-transaction limit
+    const maxPerTx = parseFloat(session.delegation?.payment_policy?.max_amount_per_tx || "0");
+    if (maxPerTx > 0 && requiredAmountUSDC > maxPerTx) {
+      return {
+        valid: false,
+        error: `❌ Transaction amount (${requiredAmountUSDC} USDC) exceeds per-tx limit (${maxPerTx} USDC)\n\nCreate a session with higher per-tx limit.`,
+      };
+    }
+
+    // Check total budget remaining
+    const maxTotal = parseFloat(session.delegation?.payment_policy?.max_total_amount || "0");
+    const spent = parseFloat(session.usage?.spent_total || "0");
+    const reserved = parseFloat(session.usage?.reserved_total || "0");
+    const remaining = maxTotal - spent - reserved;
+
+    if (maxTotal > 0 && requiredAmountUSDC > remaining) {
+      return {
+        valid: false,
+        error: `❌ Insufficient budget in session\n\nRequired: ${requiredAmountUSDC} USDC\nRemaining: ${remaining} USDC (of ${maxTotal} USDC total)\n\nCreate a new session or wait for budget to reset.`,
+      };
+    }
+
+    return { valid: true, session };
+  } catch (error: any) {
+    const errorMsg = error.message || String(error);
+    logger.error({ userId, sessionId, error: errorMsg }, "Session validation failed");
+    return {
+      valid: false,
+      error: `❌ Failed to validate session: ${errorMsg}`,
+    };
+  }
+}
+
+/**
  * Execute payment through Kite session
- * This represents the x402 payment execution
+ * This represents the x402 payment execution scoped to the session
+ *
+ * CRITICAL:
+ * - Session must be validated and active before calling this
+ * - Transaction must fit within session's max_amount_per_tx
+ * - Total spent + reserved must not exceed max_total_amount
  */
 async function executePaymentViaSession(
   userId: number,
@@ -206,12 +288,16 @@ async function executePaymentViaSession(
   description: string
 ): Promise<string> {
   try {
-    // In a real x402 system, this would execute:
-    // kpass agent:session execute --session-id <sessionId> \
-    //   --amount <amountUSDC> --recipient <paymentAddress> \
-    //   --description "Airtime to {recipient}"
-    //
-    // For now, we execute a standard payment through the session
+    // MANDATORY: Validate session before payment
+    const validation = await validateSessionBudget(userId, sessionId, amountUSDC);
+    if (!validation.valid) {
+      throw new Error(validation.error || "Session validation failed");
+    }
+
+    logger.info(
+      { userId, sessionId, amountUSDC, recipient },
+      "Executing scoped x402 payment"
+    );
 
     const output = await executeKpass(
       userId,
@@ -219,11 +305,15 @@ async function executePaymentViaSession(
         "wallet",
         "send",
         "--to",
-        recipient, // Would be treasury address or provider payment address
+        recipient,
         "--amount",
         amountUSDC.toString(),
         "--asset",
         "USDC",
+        "--session-id",
+        sessionId,
+        "--description",
+        description,
         "--output",
         "json",
       ],
@@ -236,9 +326,10 @@ async function executePaymentViaSession(
     } catch {
       return output; // Return raw output as fallback
     }
-  } catch (error) {
+  } catch (error: any) {
+    const errorMsg = error.message || String(error);
     logger.error(
-      { userId, sessionId, amountUSDC, error },
+      { userId, sessionId, amountUSDC, error: errorMsg },
       "Session payment failed"
     );
     throw error;
@@ -304,13 +395,14 @@ export function getCommerceHistory(userId: number): CommerceTransaction[] {
  * 
  * Steps:
  * 1. Validate user is authenticated
- * 2. Validate active session with budget
+ * 2. MANDATORY: Require active session with budget (no defaults)
  * 3. Validate phone number and provider
  * 4. Calculate USDC cost
- * 5. Execute payment via session
- * 6. Deliver airtime via Reloadly
- * 7. Record transaction
- * 8. Return confirmation with tx hash
+ * 5. Validate session budget availability
+ * 6. Execute payment via session
+ * 7. Deliver airtime via Reloadly
+ * 8. Record transaction
+ * 9. Return confirmation with tx hash
  */
 export async function buyAirtimeFlow(
   userId: number,
@@ -336,6 +428,20 @@ export async function buyAirtimeFlow(
       return {
         success: false,
         output: `❌ Not authenticated.\n\nPlease run /login first to set up your wallet.`,
+      };
+    }
+
+    // CRITICAL: Require explicit session ID (no defaults)
+    if (!sessionId) {
+      return {
+        success: false,
+        output: `❌ MANDATORY: Active spending session required.\n\n` +
+                `You must create and approve a spending session before making purchases.\n\n` +
+                `Steps:\n` +
+                `1. Run /request-session to create a session\n` +
+                `2. Approve it with your passkey\n` +
+                `3. Pass the session ID to this command\n\n` +
+                `This ensures budget enforcement and prevents unauthorized purchases.`,
       };
     }
 
@@ -370,12 +476,21 @@ export async function buyAirtimeFlow(
     // 5. Convert to USDC
     const amountUSDC = convertNGNToUSDC(amountNGN);
 
-    // 6. Execute wallet transfer to treasury (CRITICAL: Real blockchain payment)
+    // 6. Validate session budget BEFORE attempting payment
+    const budgetCheck = await validateSessionBudget(userId, sessionId, amountUSDC);
+    if (!budgetCheck.valid) {
+      return {
+        success: false,
+        output: budgetCheck.error || "Session validation failed",
+      };
+    }
+
+    // 7. Execute wallet transfer to treasury (CRITICAL: Real blockchain payment)
     let txHash: string;
     try {
       txHash = await executePaymentViaSession(
         userId,
-        sessionId || "default",
+        sessionId,
         amountUSDC,
         AIRTIME_TREASURY, // Send to treasury, not personal wallet
         `Airtime to ${phoneNumber} via ${provider.name}`
@@ -401,7 +516,7 @@ export async function buyAirtimeFlow(
       };
     }
 
-    // 7. Deliver airtime
+    // 8. Deliver airtime
     let deliveryResult;
     try {
       deliveryResult = await executeAirtimeDelivery(
@@ -438,7 +553,7 @@ export async function buyAirtimeFlow(
       };
     }
 
-    // 8. Record success
+    // 9. Record success
     const transaction: CommerceTransaction = {
       id: transactionId,
       userId,
@@ -454,7 +569,7 @@ export async function buyAirtimeFlow(
     };
     recordTransaction(userId, transaction);
 
-    // 9. Format response
+    // 10. Format response
     const sanitizedPhone = sanitizePhoneNumber(phoneNumber);
     const explorerUrl = `https://kitescan.ai/tx/${txHash}`;
 
@@ -489,6 +604,8 @@ export async function buyAirtimeFlow(
 /**
  * Buy mobile data flow
  * Accepts NGN amount (numeric) for now. Size strings (e.g., 2GB) are not auto-priced.
+ *
+ * CRITICAL: Requires active spending session (no defaults allowed)
  */
 export async function buyDataFlow(
   userId: number,
@@ -516,6 +633,20 @@ export async function buyDataFlow(
       };
     }
 
+    // CRITICAL: Require explicit session ID (no defaults)
+    if (!sessionId) {
+      return {
+        success: false,
+        output: `❌ MANDATORY: Active spending session required.\n\n` +
+                `You must create and approve a spending session before making purchases.\n\n` +
+                `Steps:\n` +
+                `1. Run /request-session to create a session\n` +
+                `2. Approve it with your passkey\n` +
+                `3. Pass the session ID to this command\n\n` +
+                `This ensures budget enforcement and prevents unauthorized purchases.`,
+      };
+    }
+
     const provider = getProvider(providerCode);
     if (!provider || !provider.supported) {
       const supportedProviders = Object.keys(PROVIDERS)
@@ -533,12 +664,21 @@ export async function buyDataFlow(
 
     const amountUSDC = convertNGNToUSDC(amountNGN);
 
+    // Validate session budget BEFORE attempting payment
+    const budgetCheck = await validateSessionBudget(userId, sessionId, amountUSDC);
+    if (!budgetCheck.valid) {
+      return {
+        success: false,
+        output: budgetCheck.error || "Session validation failed",
+      };
+    }
+
     // Execute wallet transfer to treasury (CRITICAL: Real blockchain payment)
     let txHash: string;
     try {
       txHash = await executePaymentViaSession(
         userId,
-        sessionId || "default",
+        sessionId,
         amountUSDC,
         DATA_TREASURY, // Send to treasury, not personal wallet
         `Data purchase for ${recipient} via ${provider.name}`

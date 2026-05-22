@@ -100,15 +100,50 @@ const INTENT_PATTERNS: Array<{
     requiresConfirmation: false,
   },
 
-  // Agent registration intents
+  // Agent registration intents (uses request-session skill, not manage-agents)
   {
     name: "Register agent",
     patterns: [
       /register\s+(?:me\s+as\s+)?(?:an?\s+)?(\w+)\s+agent/i,
-      /become\s+(?:an?\s+)?(\w+)/i,
+      /become\s+(?:an?\s+)?(\w+)\s+agent/i,
+    ],
+    action: "requestSession",
+    requiresConfirmation: true,
+  },
+
+  // Agent management intents (READ-ONLY: list agents, sessions, check user)
+  {
+    name: "List agents",
+    patterns: [
+      /(?:show|list|view)\s+(?:my\s+)?agents/i,
+      /what\s+agents\s+(?:do\s+)?i\s+have/i,
+      /which\s+agents\s+(?:are\s+)?registered/i,
     ],
     action: "manageAgents",
-    requiresConfirmation: true,
+    requiresConfirmation: false,
+  },
+
+  {
+    name: "List sessions",
+    patterns: [
+      /(?:show|list|view)\s+(?:my\s+)?sessions/i,
+      /what\s+sessions\s+(?:do\s+)?i\s+have/i,
+      /(?:show|list).*(?:spending|budget)/i,
+      /(?:check|view).*(?:active|spending)\s+(?:sessions?|budget)/i,
+    ],
+    action: "manageAgents",
+    requiresConfirmation: false,
+  },
+
+  {
+    name: "Check user",
+    patterns: [
+      /(?:check|view|show)\s+(?:my\s+)?(?:profile|account|user)/i,
+      /who\s+am\s+i/i,
+      /verify\s+(?:my\s+)?(?:account|auth)/i,
+    ],
+    action: "manageAgents",
+    requiresConfirmation: false,
   },
 ];
 
@@ -191,18 +226,23 @@ function extractEntities(message: string, match: RegExpMatchArray): Record<strin
     entities.ttl = `${timeMatch[1]}${timeMatch[2].toLowerCase()}`;
   }
 
-  // Extract agent type
+  // Extract agent type (for registration)
   const agentMatch = message.match(/(?:as\s+an?\s+|as\s+)?(\w+)\s+agent/i);
   if (agentMatch) {
     entities.agentType = agentMatch[1];
   }
 
-  // Extract search query
-  if (message.includes("search") || message.includes("find") || message.includes("discover")) {
-    const queryMatch = message.match(/(?:search|find|discover)\s+(?:for\s+)?([^?!.]+)/i);
-    if (queryMatch) {
-      entities.query = queryMatch[1].trim();
-    }
+  // Extract status filter (for session listing)
+  if (message.includes("active")) {
+    entities.statusFilter = "active";
+  } else if (message.includes("expired")) {
+    entities.statusFilter = "expired";
+  }
+
+  // Extract general query/topic
+  const queryMatch = message.match(/(?:session|agent|budget|spending|account|profile|auth)/i);
+  if (queryMatch) {
+    entities.query = queryMatch[0].toLowerCase();
   }
 
   return entities;
@@ -220,8 +260,8 @@ export function validateIntent(intent: Intent): { valid: boolean; error?: string
       break;
 
     case "requestSession":
-      if (!intent.entities.amount || !intent.entities.ttl) {
-        return { valid: false, error: "Need amount and time period" };
+      if (!intent.entities.agentType) {
+        return { valid: false, error: "Need agent type (trader, farmer, collector, etc.)" };
       }
       break;
 
@@ -238,9 +278,7 @@ export function validateIntent(intent: Intent): { valid: boolean; error?: string
       break;
 
     case "manageAgents":
-      if (!intent.entities.agentType) {
-        return { valid: false, error: "Need agent type" };
-      }
+      // Read-only operations - no special validation needed
       break;
 
     case "authenticateUser":

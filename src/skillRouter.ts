@@ -160,8 +160,16 @@ function transformEntitiesToParameters(
       break;
 
     case "manageAgents":
-      params.action = "register";
-      params.agentType = entities.agentType;
+      // Read-only operations: list agents, list sessions, or check user
+      if (typeof entities.query === "string" && (entities.query.includes("session") || entities.query.includes("spending"))) {
+        params.action = "list-sessions";
+        params.statusFilter = entities.statusFilter;
+      } else if (typeof entities.query === "string" && (entities.query.includes("agent") || entities.query.includes("registered"))) {
+        params.action = "list-agents";
+      } else {
+        // Default: check user authentication
+        params.action = "check-user";
+      }
       break;
 
     case "authenticateUser":
